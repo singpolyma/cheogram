@@ -72,14 +72,14 @@ componentMessage _ toVitelity _ _ existingRoom bareFrom resourceFrom tel body =
 		| fmap bareTxt existingRoom == Just bareFrom = fromMaybe (fromString "nonick") resourceFrom
 		| otherwise = bareFrom
 
-componentStanza db toVitelity (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
+componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| Just tel <- strNode <$> jidNode to,
 	  Just body <- getBody "jabber:component:accept" m = do
 		existingRoom <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ T.unpack tel)
 		componentMessage db toVitelity (messageType m) (fromMaybe mempty $ messageID m) existingRoom (bareTxt from) resourceFrom tel body
 	where
 	resourceFrom = strResource <$> jidResource from
-componentStanza db toVitelity (ReceivedPresence p@(Presence { presenceFrom = Just from, presenceTo = Just to }))
+componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceFrom = Just from, presenceTo = Just to }))
 	| Just tel <- strNode <$> jidNode to,
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
 	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
@@ -94,7 +94,17 @@ componentStanza db toVitelity (ReceivedPresence p@(Presence { presenceFrom = Jus
 	where
 	bareMUC = bareTxt from
 	roomNick = fromMaybe mempty (strResource <$> jidResource from)
-componentStanza _ _ _ = return ()
+componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = typ, iqFrom = Just from, iqTo = to, iqID = id }))
+	| typ `elem` [IQGet, IQSet] =
+		writeStanzaChan toComponent $ (emptyIQ IQError) {
+			iqTo = Just from,
+			iqFrom = to,
+			iqID = id,
+			iqPayload = Just $ Element (fromString "{jabber:component:accept}error")
+				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
+				[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
+		}
+componentStanza _ _ _ _ = return ()
 
 component db toVitelity toComponent = do
 	forkXMPP $ forever $ flip catchError (const $ return ()) $ do
@@ -104,7 +114,7 @@ component db toVitelity toComponent = do
 	--forever $ getStanza >>= liftIO . componentStanza db toVitelity
 	forever $ flip catchError (const $ return ()) $ do
 		s <- getStanza
-		liftIO $ componentStanza db toVitelity s
+		liftIO $ componentStanza db toVitelity toComponent s
 
 data Command = Join JID | Send Text
 	deriving (Show, Eq)
