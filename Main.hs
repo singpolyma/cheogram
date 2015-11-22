@@ -36,6 +36,30 @@ writeStanzaChan chan = atomically . writeTChan chan . mkStanzaRec
 
 getBody ns = listToMaybe . fmap (mconcat . elementText) . (isNamed (Name (fromString "body") (Just $ fromString ns) Nothing) <=< messagePayloads)
 
+data Invite = Invite {
+	inviteMUC :: JID,
+	inviteFrom :: JID,
+	inviteText :: Maybe Text,
+	invitePassword :: Maybe Text
+} deriving (Show)
+
+getMediatedInvitation (Message {messageFrom = Just from, messagePayloads = payload}) = do
+	x <- listToMaybe $ isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payload
+	invite <- listToMaybe $ isNamed (fromString "{http://jabber.org/protocol/muc#user}invite") =<< elementChildren x
+	inviteFrom <- parseJID =<< attributeText (fromString "from") invite
+	return $ Invite {
+		inviteMUC = from,
+		inviteFrom = inviteFrom,
+		inviteText = do
+			txt <- mconcat . elementText <$> listToMaybe
+				(isNamed (fromString "{http://jabber.org/protocol/muc#user}reason") =<< elementChildren invite)
+			guard (not $ T.null txt)
+			return txt,
+		invitePassword =
+			mconcat . elementText <$> listToMaybe
+			(isNamed (fromString "{http://jabber.org/protocol/muc#user}password") =<< elementChildren x)
+	}
+
 forkXMPP :: XMPP () -> XMPP ThreadId
 forkXMPP kid = do
 	session <- getSession
@@ -74,6 +98,21 @@ componentMessage _ toVitelity _ _ existingRoom bareFrom resourceFrom tel body =
 
 componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| Just tel <- strNode <$> jidNode to,
+	  Just invite <- getMediatedInvitation m = do
+		let txt = mconcat [
+				fromString "* ",
+				bareTxt (inviteFrom invite), -- TODO: or MUC nick
+				fromString " has invited you to a group",
+				maybe mempty (\t -> fromString ", saying \"" <> t <> fromString "\"") (inviteText invite),
+				fromString ". You can switch to this chat by sending\n\n/join ",
+				formatJID (inviteMUC invite)
+			]
+		writeStanzaChan toVitelity $ (emptyMessage MessageChat) {
+			messageTo = parseJID (tel <> fromString "@sms"),
+			messagePayloads = [Element (fromString "{jabber:client}body") [] [NodeContent $ ContentText txt]]
+		}
+componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
+	| Just tel <- strNode <$> jidNode to,
 	  Just body <- getBody "jabber:component:accept" m = do
 		existingRoom <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ T.unpack tel)
 		componentMessage db toVitelity (messageType m) (fromMaybe mempty $ messageID m) existingRoom (bareTxt from) resourceFrom tel body
@@ -86,7 +125,7 @@ componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceFrom = J
 	  (_:_) <- code110 status = do
 		writeStanzaChan toVitelity $ (emptyMessage MessageChat) {
 			messageTo = parseJID (tel <> fromString "@sms"),
-			messagePayloads = [Element (fromString "{jabber:client}body") [] [NodeContent $ ContentText $ fromString "You have joined " <> bareMUC <> fromString " as " <> roomNick]]
+			messagePayloads = [Element (fromString "{jabber:client}body") [] [NodeContent $ ContentText $ fromString "* You have joined " <> bareMUC <> fromString " as " <> roomNick]]
 		}
 
 		True <- TC.runTCM (TC.put db (T.unpack tel) (T.unpack $ formatJID from))
