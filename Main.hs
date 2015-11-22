@@ -1,3 +1,4 @@
+{-# LANGUAGE PackageImports #-}
 import System.Environment
 import Data.String
 import Network
@@ -11,6 +12,7 @@ import Data.XML.Types
 import Control.Applicative
 import Data.Monoid
 import Data.Maybe
+import "monads-tf" Control.Monad.Error (catchError)
 import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TChan
@@ -95,12 +97,12 @@ componentStanza db toVitelity (ReceivedPresence p@(Presence { presenceFrom = Jus
 componentStanza _ _ _ = return ()
 
 component db toVitelity toComponent = do
-	forkXMPP $ forever $ do
+	forkXMPP $ forever $ flip catchError (const $ return ()) $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 		putStanza $ stanza
 
 	--forever $ getStanza >>= liftIO . componentStanza db toVitelity
-	forever $ do
+	forever $ flip catchError (const $ return ()) $ do
 		s <- getStanza
 		liftIO $ componentStanza db toVitelity s
 
@@ -119,11 +121,11 @@ viteltiy db toVitelity toComponent = do
 	bindJID (fromString "2266669991@s.ms/theone")
 	putStanza $ emptyPresence PresenceAvailable
 
-	forkXMPP $ forever $ do
+	forkXMPP $ forever $ flip catchError (const $ return ()) $ do
 		stanza <- liftIO $ atomically $ readTChan toVitelity
 		putStanza $ stanza
 
-	forever $ do
+	forever $ flip catchError (const $ return ()) $ do
 		m <- getMessage <$> getStanza
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
 			(Just tel, Just txt) -> case parseCommand txt (fromString "thenick") of
