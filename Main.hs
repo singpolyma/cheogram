@@ -39,6 +39,12 @@ mkSMS tel txt = (emptyMessage MessageChat) {
 	messagePayloads = [Element (fromString "{jabber:client}body") [] [NodeContent $ ContentText txt]]
 }
 
+tcKey tel key = T.unpack tel <> "\0" <> key
+tcGetJID db tel key = (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ tcKey tel key)
+tcPutJID db tel key jid = do
+	True <- TC.runTCM (TC.put db (tcKey tel key) (T.unpack $ formatJID jid))
+	return ()
+
 getBody ns = listToMaybe . fmap (mconcat . elementText) . (isNamed (Name (fromString "body") (Just $ fromString ns) Nothing) <=< messagePayloads)
 
 data Invite = Invite {
@@ -111,6 +117,8 @@ componentMessage _ toVitelity _ _ existingRoom bareFrom resourceFrom tel body =
 componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| Just tel <- strNode <$> jidNode to,
 	  Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
+		existingRoom <- tcGetJID db tel "joined"
+		existingInvite <- tcGetJID db tel "invited"
 		let txt = mconcat [
 				fromString "* ",
 				bareTxt (inviteFrom invite), -- TODO: or MUC nick
@@ -119,11 +127,13 @@ componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just t
 				fromString ". You can switch to this chat by sending\n\n/join ",
 				formatJID (inviteMUC invite)
 			]
-		writeStanzaChan toVitelity $ mkSMS tel txt
+		when (existingRoom /= Just (inviteMUC invite) && existingInvite /= Just (inviteMUC invite)) $ do
+			tcPutJID db tel "invited" (inviteMUC invite)
+			writeStanzaChan toVitelity $ mkSMS tel txt
 componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| Just tel <- strNode <$> jidNode to,
 	  Just body <- getBody "jabber:component:accept" m = do
-		existingRoom <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ T.unpack tel)
+		existingRoom <- tcGetJID db tel "joined"
 		componentMessage db toVitelity (messageType m) (fromMaybe mempty $ messageID m) existingRoom (bareTxt from) resourceFrom tel body
 	where
 	resourceFrom = strResource <$> jidResource from
@@ -132,17 +142,16 @@ componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceFrom = J
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
 	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
 	  (_:_) <- code110 status = do
+		tcPutJID db tel "joined" from
 		writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have joined ", bareMUC, fromString " as ", roomNick])
-		True <- TC.runTCM (TC.put db (T.unpack tel) (T.unpack $ formatJID from))
-		return ()
 	where
 	bareMUC = bareTxt from
 	roomNick = fromMaybe mempty (strResource <$> jidResource from)
 componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = PresenceUnavailable, presenceFrom = Just from, presenceTo = Just to }))
 	| Just tel <- strNode <$> jidNode to = do
-		existingRoom <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ T.unpack tel)
+		existingRoom <- tcGetJID db tel "joined"
 		when (existingRoom == Just from) $ do
-			True <- TC.runTCM $ TC.out db $ T.unpack tel
+			True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
 			writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareTxt from)
 componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = typ, iqFrom = Just from, iqTo = to, iqID = id }))
 	| typ `elem` [IQGet, IQSet] =
@@ -189,14 +198,15 @@ viteltiy db toVitelity toComponent = do
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
 			(Just tel, Just txt) -> case parseCommand txt tel of
 					Just (Join room) -> do
-						existingRoom <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ T.unpack tel)
+						existingRoom <- tcGetJID db tel "joined"
 						forM_ existingRoom $ \leaveRoom -> do
 							writeStanzaChan toComponent $ (emptyPresence PresenceUnavailable) {
 								presenceTo = Just leaveRoom,
 								presenceFrom = parseJID $ tel <> fromString "@sms.singpolyma.net",
 								presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString "Joined a different room."]]
 							}
-							TC.runTCM $ TC.out db $ T.unpack tel
+							True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
+							return ()
 
 						writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
 							presenceTo = Just room,
@@ -206,7 +216,7 @@ viteltiy db toVitelity toComponent = do
 							]]
 						}
 					Just (Send msg) -> do
-						existingRoom <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ T.unpack tel)
+						existingRoom <- tcGetJID db tel "joined"
 						case existingRoom of
 							Just room -> do
 								uuid <- (fmap.fmap) UUID.toString UUID.nextUUID
