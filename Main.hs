@@ -167,7 +167,6 @@ getMessage (ReceivedMessage m) = Just m
 getMessage _ = Nothing
 
 viteltiy db toVitelity toComponent = do
-	bindJID (fromString "2266669991@s.ms/theone")
 	putStanza $ emptyPresence PresenceAvailable
 
 	forkXMPP $ forever $ flip catchError (const $ return ()) $ do
@@ -223,4 +222,6 @@ main = do
 	forkIO $ void $ runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent)
 
 	let Just vitelityParsedJid = parseJID $ fromString vitelityJid
-	runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ viteltiy db toVitelity toComponent
+	runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
+		bindJID vitelityParsedJid
+		viteltiy db toVitelity toComponent
