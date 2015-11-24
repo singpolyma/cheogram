@@ -133,6 +133,16 @@ componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceFrom = J
 	where
 	bareMUC = bareTxt from
 	roomNick = fromMaybe mempty (strResource <$> jidResource from)
+componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = PresenceUnavailable, presenceFrom = Just from, presenceTo = Just to }))
+	| Just tel <- strNode <$> jidNode to = do
+		existingRoom <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ T.unpack tel)
+		when (existingRoom == Just from) $ do
+			True <- TC.runTCM $ TC.out db $ T.unpack tel
+			writeStanzaChan toVitelity $ (emptyMessage MessageChat) {
+				messageTo = parseJID (tel <> fromString "@sms"),
+				messagePayloads = [Element (fromString "{jabber:client}body") [] [NodeContent $ ContentText $ fromString "* You have left " <> bareTxt from]]
+			}
+			return ()
 componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = typ, iqFrom = Just from, iqTo = to, iqID = id }))
 	| typ `elem` [IQGet, IQSet] =
 		writeStanzaChan toComponent $ (emptyIQ IQError) {
