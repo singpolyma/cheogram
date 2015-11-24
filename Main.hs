@@ -170,7 +170,7 @@ componentStanza db _ toComponent (ReceivedPresence p@(Presence { presenceType = 
 componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p =
-		writeStanzaChan toComponent $ (emptyIQ IQError) {
+		writeStanzaChan toComponent $ (emptyIQ IQResult) {
 			iqTo = Just from,
 			iqFrom = Just to,
 			iqID = id,
@@ -186,7 +186,7 @@ componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just 
 componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Just _ <- jidNode to,
 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p =
-		writeStanzaChan toComponent $ (emptyIQ IQError) {
+		writeStanzaChan toComponent $ (emptyIQ IQResult) {
 			iqTo = Just from,
 			iqFrom = Just to,
 			iqID = id,
