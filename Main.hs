@@ -177,7 +177,7 @@ viteltiy db toVitelity toComponent = do
 	forever $ flip catchError (const $ return ()) $ do
 		m <- getMessage <$> getStanza
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
-			(Just tel, Just txt) -> case parseCommand txt (fromString "thenick") of
+			(Just tel, Just txt) -> case parseCommand txt tel of
 					Just (Join room) -> do
 						existingRoom <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ T.unpack tel)
 						forM_ existingRoom $ \leaveRoom ->
