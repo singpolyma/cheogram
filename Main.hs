@@ -137,7 +137,7 @@ componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just t
 		componentMessage db toVitelity (messageType m) (fromMaybe mempty $ messageID m) existingRoom (bareTxt from) resourceFrom tel body
 	where
 	resourceFrom = strResource <$> jidResource from
-componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceFrom = Just from, presenceTo = Just to }))
+componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
 	| Just tel <- strNode <$> jidNode to,
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
 	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
@@ -153,6 +153,20 @@ componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = P
 		when (existingRoom == Just from) $ do
 			True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
 			writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareTxt from)
+componentStanza db _ toComponent (ReceivedPresence p@(Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+	writeStanzaChan toComponent $ (emptyPresence PresenceSubscribed) {
+		presenceTo = Just from,
+		presenceFrom = Just to
+	}
+	writeStanzaChan toComponent $ (emptyPresence PresenceSubscribe) {
+		presenceTo = Just from,
+		presenceFrom = Just to
+	}
+componentStanza db _ toComponent (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
+		presenceTo = Just from,
+		presenceFrom = Just to
+	}
 componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p =
