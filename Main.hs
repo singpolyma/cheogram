@@ -197,6 +197,18 @@ componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just 
 					] []
 				]
 		}
+componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just (to@JID {jidNode = Nothing}), iqID = id, iqPayload = Just p }))
+	| [_] <- isNamed (fromString "{jabber:iq:gateway}query") p =
+		writeStanzaChan toComponent $ (emptyIQ IQResult) {
+			iqTo = Just from,
+			iqFrom = Just to,
+			iqID = id,
+			iqPayload = Just $ Element (fromString "{jabber:iq:gateway}query") []
+				[
+					NodeElement $ Element (fromString "{jabber:iq:gateway}desc") [ ] [NodeContent $ ContentText $ fromString "Please enter your contact's phone number"],
+					NodeElement $ Element (fromString "{jabber:iq:gateway}prompt") [ ] [NodeContent $ ContentText $ fromString "Phone Number"]
+				]
+		}
 componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = typ, iqFrom = Just from, iqTo = to, iqID = id }))
 	| typ `elem` [IQGet, IQSet] =
 		writeStanzaChan toComponent $ (emptyIQ IQError) {
