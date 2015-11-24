@@ -205,8 +205,8 @@ viteltiy db toVitelity toComponent = do
 									messageID = Just $ fromString ("GROUPSMS%" <> fromMaybe "UUIDFAIL" uuid),
 									messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText msg]]
 								}
-							Nothing -> print "ERROR"
-					Nothing -> print "ERROR"
+							Nothing -> print "ERROR: trying to send, but no room joined"
+					Nothing -> print "ERROR: no command parsed"
 			_ -> return ()
 
 openTokyoCabinet :: (TC.TCDB a) => FilePath -> IO a
