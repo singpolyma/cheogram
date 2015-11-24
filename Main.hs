@@ -222,12 +222,12 @@ componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = typ, iqFrom = Just fr
 componentStanza _ _ _ _ = return ()
 
 component db toVitelity toComponent = do
-	forkXMPP $ forever $ flip catchError (const $ return ()) $ do
+	forkXMPP $ forever $ flip catchError (liftIO . print) $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 		putStanza $ stanza
 
 	--forever $ getStanza >>= liftIO . componentStanza db toVitelity
-	forever $ flip catchError (const $ return ()) $ do
+	forever $ flip catchError (liftIO . print) $ do
 		s <- getStanza
 		liftIO $ componentStanza db toVitelity toComponent s
 
@@ -245,11 +245,11 @@ getMessage _ = Nothing
 viteltiy db toVitelity toComponent = do
 	putStanza $ emptyPresence PresenceAvailable
 
-	forkXMPP $ forever $ flip catchError (const $ return ()) $ do
+	forkXMPP $ forever $ flip catchError (liftIO . print) $ do
 		stanza <- liftIO $ atomically $ readTChan toVitelity
 		putStanza $ stanza
 
-	forever $ flip catchError (const $ return ()) $ do
+	forever $ flip catchError (liftIO . print) $ do
 		m <- getMessage <$> getStanza
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
 			(Just tel, Just txt) -> case parseCommand txt tel of
