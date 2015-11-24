@@ -230,29 +230,33 @@ component db toVitelity toComponent = do
 		s <- getStanza
 		liftIO $ componentStanza db toVitelity toComponent s
 
-data Command = Join JID | JoinInvited | Send Text
+data Command = Join JID | JoinInvited | Send Text | Leave
 	deriving (Show, Eq)
 
 parseCommand txt nick
 	| Just room <- T.stripPrefix (fromString "/join ") txt =
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
 	| txt == fromString "/join" = Just JoinInvited
+	| txt == fromString "/leave" = Just Leave
+	| txt == fromString "/part" = Just Leave
 	| otherwise = Just $ Send txt
 
 getMessage (ReceivedMessage m) = Just m
 getMessage _ = Nothing
 
-joinRoom db toComponent componentHost tel room = do
+leaveRoom db toComponent componentHost tel reason = do
 	existingRoom <- tcGetJID db tel "joined"
 	forM_ existingRoom $ \leaveRoom -> do
 		writeStanzaChan toComponent $ (emptyPresence PresenceUnavailable) {
 			presenceTo = Just leaveRoom,
 			presenceFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
-			presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString "Joined a different room."]]
+			presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString reason]]
 		}
 		True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
 		return ()
 
+joinRoom db toComponent componentHost tel room = do
+	leaveRoom db toComponent componentHost tel "Joined a different room."
 	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
 		presenceTo = Just room,
 		presenceFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
@@ -279,6 +283,7 @@ viteltiy db toVitelity toComponent componentHost = do
 							Just room -> joinRoom db toComponent componentHost tel room
 							Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You have not recently been invited to a group")
 					Just (Join room) -> joinRoom db toComponent componentHost tel room
+					Just Leave -> leaveRoom db toComponent componentHost tel "Left"
 					Just (Send msg) -> do
 						existingRoom <- tcGetJID db tel "joined"
 						case existingRoom of
