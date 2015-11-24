@@ -153,6 +153,36 @@ componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = P
 		when (existingRoom == Just from) $ do
 			True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
 			writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareTxt from)
+componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
+	| Nothing <- jidNode to,
+	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p =
+		writeStanzaChan toComponent $ (emptyIQ IQError) {
+			iqTo = Just from,
+			iqFrom = Just to,
+			iqID = id,
+			iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") []
+				[
+					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}identity") [
+						(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
+						(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "sms"]),
+						(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram SMS Gateway"])
+					] []
+				]
+		}
+componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
+	| Just _ <- jidNode to,
+	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p =
+		writeStanzaChan toComponent $ (emptyIQ IQError) {
+			iqTo = Just from,
+			iqFrom = Just to,
+			iqID = id,
+			iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") []
+				[
+					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:x:conference"])
+					] []
+				]
+		}
 componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = typ, iqFrom = Just from, iqTo = to, iqID = id }))
 	| typ `elem` [IQGet, IQSet] =
 		writeStanzaChan toComponent $ (emptyIQ IQError) {
