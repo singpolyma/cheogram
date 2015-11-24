@@ -179,12 +179,13 @@ viteltiy db toVitelity toComponent = do
 			(Just tel, Just txt) -> case parseCommand txt tel of
 					Just (Join room) -> do
 						existingRoom <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ T.unpack tel)
-						forM_ existingRoom $ \leaveRoom ->
+						forM_ existingRoom $ \leaveRoom -> do
 							writeStanzaChan toComponent $ (emptyPresence PresenceUnavailable) {
 								presenceTo = Just leaveRoom,
 								presenceFrom = parseJID $ tel <> fromString "@sms.singpolyma.net",
 								presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString "Joined a different room."]]
 							}
+							TC.runTCM $ TC.out db $ T.unpack tel
 
 						writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
 							presenceTo = Just room,
