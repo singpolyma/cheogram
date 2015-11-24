@@ -216,8 +216,8 @@ viteltiy db toVitelity toComponent = do
 									messageID = Just $ fromString ("CHEOGRAM%" <> fromMaybe "UUIDFAIL" uuid),
 									messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText msg]]
 								}
-							Nothing -> print "ERROR: trying to send, but no room joined"
-					Nothing -> print "ERROR: no command parsed"
+							Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a room")
+					Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You sent an invalid message")
 			_ -> return ()
 
 openTokyoCabinet :: (TC.TCDB a) => FilePath -> IO a
