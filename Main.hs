@@ -124,8 +124,7 @@ componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just t
 				bareTxt (inviteFrom invite), -- TODO: or MUC nick
 				fromString " has invited you to a group",
 				maybe mempty (\t -> fromString ", saying \"" <> t <> fromString "\"") (inviteText invite),
-				fromString ". You can switch to this chat by sending\n\n/join ",
-				formatJID (inviteMUC invite)
+				fromString "\nYou can switch to this group by sending /join"
 			]
 		when (existingRoom /= Just (inviteMUC invite) && existingInvite /= Just (inviteMUC invite)) $ do
 			tcPutJID db tel "invited" (inviteMUC invite)
@@ -231,18 +230,38 @@ component db toVitelity toComponent = do
 		s <- getStanza
 		liftIO $ componentStanza db toVitelity toComponent s
 
-data Command = Join JID | Send Text
+data Command = Join JID | JoinInvited | Send Text
 	deriving (Show, Eq)
 
 parseCommand txt nick
 	| Just room <- T.stripPrefix (fromString "/join ") txt =
-		Join <$> parseJID (room <> fromString "/" <> nick)
+		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
+	| txt == fromString "/join" = Just JoinInvited
 	| otherwise = Just $ Send txt
 
 getMessage (ReceivedMessage m) = Just m
 getMessage _ = Nothing
 
-viteltiy db toVitelity toComponent = do
+joinRoom db toComponent componentHost tel room = do
+	existingRoom <- tcGetJID db tel "joined"
+	forM_ existingRoom $ \leaveRoom -> do
+		writeStanzaChan toComponent $ (emptyPresence PresenceUnavailable) {
+			presenceTo = Just leaveRoom,
+			presenceFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+			presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString "Joined a different room."]]
+		}
+		True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
+		return ()
+
+	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
+		presenceTo = Just room,
+		presenceFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+		presencePayloads = [Element (fromString "{http://jabber.org/protocol/muc}x") [] [
+			NodeElement $ Element (fromString "{http://jabber.org/protocol/muc}history") [(fromString "{http://jabber.org/protocol/muc}maxchars", [ContentText $ fromString "0"])] []
+		]]
+	}
+
+viteltiy db toVitelity toComponent componentHost = do
 	putStanza $ emptyPresence PresenceAvailable
 
 	forkXMPP $ forever $ flip catchError (liftIO . print) $ do
@@ -253,24 +272,13 @@ viteltiy db toVitelity toComponent = do
 		m <- getMessage <$> getStanza
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
 			(Just tel, Just txt) -> case parseCommand txt tel of
-					Just (Join room) -> do
-						existingRoom <- tcGetJID db tel "joined"
-						forM_ existingRoom $ \leaveRoom -> do
-							writeStanzaChan toComponent $ (emptyPresence PresenceUnavailable) {
-								presenceTo = Just leaveRoom,
-								presenceFrom = parseJID $ tel <> fromString "@sms.singpolyma.net",
-								presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString "Joined a different room."]]
-							}
-							True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
-							return ()
-
-						writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
-							presenceTo = Just room,
-							presenceFrom = parseJID $ tel <> fromString "@sms.singpolyma.net",
-							presencePayloads = [Element (fromString "{http://jabber.org/protocol/muc}x") [] [
-								NodeElement $ Element (fromString "{http://jabber.org/protocol/muc}history") [(fromString "{http://jabber.org/protocol/muc}maxchars", [ContentText $ fromString "0"])] []
-							]]
-						}
+					Just JoinInvited -> do
+						invitedRoom <- tcGetJID db tel "invited"
+						let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> fromString "/" <> tel)
+						case toJoin of
+							Just room -> joinRoom db toComponent componentHost tel room
+							Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You have not recently been invited to a group")
+					Just (Join room) -> joinRoom db toComponent componentHost tel room
 					Just (Send msg) -> do
 						existingRoom <- tcGetJID db tel "joined"
 						case existingRoom of
@@ -278,7 +286,7 @@ viteltiy db toVitelity toComponent = do
 								uuid <- (fmap.fmap) UUID.toString UUID.nextUUID
 								writeStanzaChan toComponent $ (emptyMessage MessageGroupChat) {
 									messageTo = parseJID $ bareTxt room,
-									messageFrom = parseJID $ tel <> fromString "@sms.singpolyma.net",
+									messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
 									messageID = Just $ fromString ("CHEOGRAM%" <> fromMaybe "UUIDFAIL" uuid),
 									messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText msg]]
 								}
@@ -302,4 +310,4 @@ main = do
 	let Just vitelityParsedJid = parseJID $ fromString vitelityJid
 	runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
 		bindJID vitelityParsedJid
-		viteltiy db toVitelity toComponent
+		viteltiy db toVitelity toComponent name
