@@ -89,7 +89,7 @@ code110 status =
 componentMessage db toVitelity MessageGroupChat mid existingRoom bareFrom resourceFrom tel body = do
 	if fmap bareTxt existingRoom == Just bareFrom && (
 	   existingRoom /= parseJID (bareFrom <> fromString "/" <> fromMaybe mempty resourceFrom) ||
-	   not (fromString "GROUPSMS%" `T.isPrefixOf` mid)) then
+	   not (fromString "CHEOGRAM%" `T.isPrefixOf` mid)) then
 		writeStanzaChan toVitelity $ (emptyMessage MessageChat) {
 			messageTo = parseJID (tel <> fromString "@sms"),
 			messagePayloads = [Element (fromString "{jabber:client}body") [] [NodeContent $ ContentText txt]]
@@ -225,7 +225,7 @@ viteltiy db toVitelity toComponent = do
 								writeStanzaChan toComponent $ (emptyMessage MessageGroupChat) {
 									messageTo = parseJID $ bareTxt room,
 									messageFrom = parseJID $ tel <> fromString "@sms.singpolyma.net",
-									messageID = Just $ fromString ("GROUPSMS%" <> fromMaybe "UUIDFAIL" uuid),
+									messageID = Just $ fromString ("CHEOGRAM%" <> fromMaybe "UUIDFAIL" uuid),
 									messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText msg]]
 								}
 							Nothing -> print "ERROR: trying to send, but no room joined"
