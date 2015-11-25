@@ -1,5 +1,6 @@
 {-# LANGUAGE PackageImports #-}
 import System.Environment
+import System.Random
 import Data.String
 import Network
 import Network.Protocol.XMPP
@@ -275,6 +276,9 @@ viteltiy db toVitelity toComponent componentHost = do
 	forkXMPP $ forever $ flip catchError (liftIO . print) $ do
 		stanza <- liftIO $ atomically $ readTChan toVitelity
 		putStanza $ stanza
+		wait <- liftIO $ getStdRandom (randomR (400000,1500000))
+		liftIO $ print ("Going to threadDelay ", wait)
+		liftIO $ threadDelay wait
 
 	forever $ flip catchError (liftIO . print) $ do
 		m <- getMessage <$> getStanza
