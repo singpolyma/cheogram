@@ -143,7 +143,7 @@ componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = P
 	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
 	  (_:_) <- code110 status = do
 		existingInvite <- tcGetJID db tel "invited"
-		when (existingInvite == Just bareMUC) $ do
+		when (existingInvite == parseJID bareMUC) $ do
 			True <- TC.runTCM $ TC.out db $ tcKey tel "invited"
 			return ()
 		tcPutJID db tel "joined" from
@@ -235,10 +235,12 @@ component db toVitelity toComponent = do
 		s <- getStanza
 		liftIO $ componentStanza db toVitelity toComponent s
 
-data Command = Join JID | JoinInvited | Send Text | Leave
+data Command = Join JID | JoinInvited | Send Text | Leave | InviteCmd JID
 	deriving (Show, Eq)
 
 parseCommand txt nick
+	| Just jid <- T.stripPrefix (fromString "/invite ") txt =
+		InviteCmd <$> parseJID jid
 	| Just room <- T.stripPrefix (fromString "/join ") txt =
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
 	| txt == fromString "/join" = Just JoinInvited
@@ -292,6 +294,32 @@ viteltiy db toVitelity toComponent componentHost = do
 							Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You have not recently been invited to a group")
 					Just (Join room) -> joinRoom db toComponent componentHost tel room
 					Just Leave -> leaveRoom db toComponent componentHost tel "Left"
+					Just (InviteCmd jid) -> do
+							existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
+							forM_ existingRoom $ \room -> do
+								writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
+									messageTo = Just room,
+									messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+									messagePayloads = [
+										Element (fromString "{http://jabber.org/protocol/muc#user}x") [] [
+											NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#user}invite") [
+												(fromString "{http://jabber.org/protocol/muc#user}to", [ContentText $ formatJID jid])
+											] []
+										]
+									]
+								}
+
+								writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
+									messageTo = Just jid,
+									messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+									messagePayloads = [
+										Element (fromString "{jabber:x:conference}x") [
+											(fromString "{jabber:x:conference}jid", [ContentText $ formatJID room])
+										] [],
+										Element (fromString "{jabber:component:accept}body") []
+											[NodeContent $ ContentText $ mconcat [tel, fromString " has invited you to join ", formatJID room]]
+									]
+								}
 					Just (Send msg) -> do
 						existingRoom <- tcGetJID db tel "joined"
 						case existingRoom of
