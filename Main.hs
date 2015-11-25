@@ -168,7 +168,9 @@ componentStanza db toVitelity toComponent (ReceivedPresence p@(Presence { presen
 	bareMUC = bareTxt from
 	roomNick = fromMaybe mempty (strResource <$> jidResource from)
 componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = PresenceUnavailable, presenceFrom = Just from, presenceTo = Just to }))
-	| Just tel <- strNode <$> jidNode to = do
+	| Just tel <- strNode <$> jidNode to,
+	  [] <- code "303" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren
+	        =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p = do
 		existingRoom <- tcGetJID db tel "joined"
 		when (existingRoom == Just from) $ do
 			True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
@@ -258,7 +260,7 @@ component db toVitelity toComponent = do
 		s <- getStanza
 		liftIO $ componentStanza db toVitelity toComponent s
 
-data Command = Join JID | JoinInvited | Send Text | Leave | InviteCmd JID
+data Command = Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetNick Text
 	deriving (Show, Eq)
 
 parseCommand txt nick
@@ -266,6 +268,7 @@ parseCommand txt nick
 		InviteCmd <$> parseJID jid
 	| Just room <- T.stripPrefix (fromString "/join ") txt =
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
+	| Just nick <- T.stripPrefix (fromString "/nick ") txt = Just $ SetNick nick
 	| txt == fromString "/join" = Just JoinInvited
 	| txt == fromString "/leave" = Just Leave
 	| txt == fromString "/part" = Just Leave
@@ -286,7 +289,6 @@ leaveRoom db toComponent componentHost tel reason = do
 		return ()
 
 joinRoom db toComponent componentHost tel room = do
-	leaveRoom db toComponent componentHost tel "Joined a different room."
 	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
 		presenceTo = Just room,
 		presenceFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
@@ -308,14 +310,18 @@ viteltiy db toVitelity toComponent componentHost = do
 	forever $ flip catchError (liftIO . print) $ do
 		m <- getMessage <$> getStanza
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
-			(Just tel, Just txt) -> case parseCommand txt tel of
+			(Just tel, Just txt) -> do
+				nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
+				case parseCommand txt nick of
 					Just JoinInvited -> do
 						invitedRoom <- tcGetJID db tel "invited"
-						let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> fromString "/" <> tel)
+						let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> fromString "/" <> nick)
 						case toJoin of
 							Just room -> joinRoom db toComponent componentHost tel room
 							Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You have not recently been invited to a group")
-					Just (Join room) -> joinRoom db toComponent componentHost tel room
+					Just (Join room) -> do
+						leaveRoom db toComponent componentHost tel "Joined a different room."
+						joinRoom db toComponent componentHost tel room
 					Just Leave -> leaveRoom db toComponent componentHost tel "Left"
 					Just (InviteCmd jid) -> do
 							existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
@@ -343,6 +349,14 @@ viteltiy db toVitelity toComponent componentHost = do
 											[NodeContent $ ContentText $ mconcat [tel, fromString " has invited you to join ", formatJID room]]
 									]
 								}
+					Just (SetNick nick) -> do
+						existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
+						forM_ existingRoom $ \room -> do
+							let toJoin = parseJID (bareTxt room <> fromString "/" <> nick)
+							forM_ toJoin $ joinRoom db toComponent componentHost tel
+
+						True <- TC.runTCM (TC.put db (tcKey tel "nick") (T.unpack nick))
+						return ()
 					Just (Send msg) -> do
 						existingRoom <- tcGetJID db tel "joined"
 						case existingRoom of
