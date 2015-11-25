@@ -141,6 +141,10 @@ componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = P
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
 	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
 	  (_:_) <- code110 status = do
+		existingInvite <- tcGetJID db tel "invited"
+		when (existingInvite == Just bareMUC) $ do
+			True <- TC.runTCM $ TC.out db $ tcKey tel "invited"
+			return ()
 		tcPutJID db tel "joined" from
 		writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have joined ", bareMUC, fromString " as ", roomNick])
 	where
