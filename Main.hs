@@ -1,6 +1,7 @@
 {-# LANGUAGE PackageImports #-}
 import System.Environment
 import Data.Time
+import Data.Char
 import System.Random
 import Data.String
 import Network
@@ -40,7 +41,7 @@ instance Stanza StanzaRec where
 writeStanzaChan chan = atomically . writeTChan chan . mkStanzaRec
 
 mkSMS tel txt = (emptyMessage MessageChat) {
-	messageTo = parseJID (tel <> fromString "@sms"),
+	messageTo = telToVitelity tel,
 	messagePayloads = [Element (fromString "{jabber:client}body") [] [NodeContent $ ContentText txt]]
 }
 
@@ -264,10 +265,28 @@ component db toVitelity toComponent = do
 		s <- getStanza
 		liftIO $ componentStanza db toVitelity toComponent s
 
+telToVitelity tel
+	| not $ all isDigit $ T.unpack tel = Nothing
+	| T.length tel == 10 = parseJID (tel <> fromString "@sms")
+	| T.length tel == 11, Just tel' <- T.stripPrefix (fromString "1") tel = parseJID (tel' <> fromString "@sms")
+	| otherwise = Nothing
+
+telToJid tel host
+	| not $ all isDigit $ T.unpack tel = Nothing
+	| T.length tel == 10 = parseJID (T.cons '1' tel <> fromString "@" <> host)
+	| T.length tel == 11, (fromString "1") `T.isPrefixOf` tel = parseJID (tel <> fromString "@" <> host)
+	| otherwise = Nothing
+
+parseJIDrequireNode txt
+	| Just _ <- jidNode =<< jid = jid
+	| otherwise = Nothing
+	where
+	jid = parseJID txt
+
 data Command = Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
 	deriving (Show, Eq)
 
-parseCommand txt nick
+parseCommand txt room nick componentHost
 	| Just jid <- T.stripPrefix (fromString "/invite ") txt =
 		InviteCmd <$> parseJID jid
 	| Just room <- T.stripPrefix (fromString "/join ") txt =
@@ -275,7 +294,7 @@ parseCommand txt nick
 	| Just nick <- T.stripPrefix (fromString "/nick ") txt = Just $ SetNick nick
 	| Just input <- T.stripPrefix (fromString "/msg ") txt =
 		let (to, msg) = T.breakOn (fromString " ") input in
-		Whisper <$> parseJID to <*> pure msg
+		Whisper <$> (parseJIDrequireNode to <|> telToJid to (fromString componentHost)) <*> pure msg
 	| txt == fromString "/join" = Just JoinInvited
 	| txt == fromString "/leave" = Just Leave
 	| txt == fromString "/part" = Just Leave
@@ -315,7 +334,8 @@ joinRoom db toComponent componentHost tel room = do
 
 processSMS db toVitelity toComponent componentHost tel txt = do
 	nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
-	case parseCommand txt nick of
+	existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
+	case parseCommand txt existingRoom nick componentHost of
 		Just JoinInvited -> do
 			invitedRoom <- tcGetJID db tel "invited"
 			let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> fromString "/" <> nick)
@@ -327,7 +347,6 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 			joinRoom db toComponent componentHost tel room
 		Just Leave -> leaveRoom db toComponent componentHost tel "Left"
 		Just (InviteCmd jid) -> do
-				existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
 				forM_ existingRoom $ \room -> do
 					writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
 						messageTo = Just room,
@@ -353,7 +372,6 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 						]
 					}
 		Just (SetNick nick) -> do
-			existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
 			forM_ existingRoom $ \room -> do
 				let toJoin = parseJID (bareTxt room <> fromString "/" <> nick)
 				forM_ toJoin $ joinRoom db toComponent componentHost tel
@@ -368,11 +386,10 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 				messageID = Just $ fromString ("CHEOGRAM%" <> fromMaybe "UUIDFAIL" uuid),
 				messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText msg]]
 			}
-		Just (Send msg) -> do
-			existingRoom <- tcGetJID db tel "joined"
-			case existingRoom of
-				Just room -> sendToRoom toComponent componentHost tel room msg
-				Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a room")
+		Just (Send msg)
+			| (fromString "(SMSSERVER) ") `T.isPrefixOf` msg -> return () -- bogus message from vitelity, ignore
+			| Just room <- existingRoom -> sendToRoom toComponent componentHost tel room msg
+			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a room")
 		Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You sent an invalid message")
 
 viteltiy db chunks toVitelity toComponent componentHost = do
@@ -384,7 +401,6 @@ viteltiy db chunks toVitelity toComponent componentHost = do
 		liftIO $ print (stanzaTo stanza, b)
 		putStanza $ stanza
 		wait <- liftIO $ getStdRandom (randomR (400000,1500000))
-		liftIO $ print ("Going to threadDelay ", wait)
 		liftIO $ threadDelay wait
 
 	forever $ flip catchError (liftIO . print) $ do
