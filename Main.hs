@@ -359,7 +359,7 @@ parseJIDrequireNode txt
 	where
 	jid = parseJID txt
 
-data Command = Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
+data Command = Help | Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentHost
@@ -381,6 +381,7 @@ parseCommand txt room nick componentHost
 	| txt == fromString "/join" = Just JoinInvited
 	| txt == fromString "/leave" = Just Leave
 	| txt == fromString "/part" = Just Leave
+	| txt == fromString "/help" = Just Help
 	| otherwise = Just $ Send txt
 
 getMessage (ReceivedMessage m) = Just m
@@ -474,6 +475,12 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 			| (fromString "(SMSSERVER) ") `T.isPrefixOf` msg -> return () -- bogus message from vitelity, ignore
 			| Just room <- existingRoom -> sendToRoom toComponent componentHost tel room msg
 			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a room")
+		Just Help -> writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
+				"/nick (desired name) - set nick\n",
+				"/invite (number or JID) - invite to group\n",
+				"/msg (user) - whisper to group member\n",
+				"/leave - leave group"
+			]
 		Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You sent an invalid message")
 
 viteltiy db chunks toVitelity toComponent componentHost = do
