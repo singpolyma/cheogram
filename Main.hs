@@ -451,8 +451,6 @@ viteltiy db chunks toVitelity toComponent componentHost = do
 
 	forkXMPP $ forever $ flip catchError (liftIO . print) $ do
 		stanza <- liftIO $ atomically $ readTChan toVitelity
-		let b = listToMaybe . fmap (mconcat . elementText) . (isNamed (Name (fromString "body") (Just $ fromString "jabber:client") Nothing) <=< elementChildren) $ stanzaToElement stanza
-		liftIO $ print (stanzaTo stanza, b)
 		putStanza $ stanza
 		wait <- liftIO $ getStdRandom (randomR (400000,1500000))
 		liftIO $ threadDelay wait
