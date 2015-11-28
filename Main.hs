@@ -112,26 +112,8 @@ code str status =
 	<>
 	hasAttributeText (fromString "code") (== (fromString str)) status
 
-componentMessage db toVitelity MessageGroupChat mid existingRoom bareFrom resourceFrom tel body = do
-	if fmap bareTxt existingRoom == Just bareFrom && (
-	   existingRoom /= parseJID (bareFrom <> fromString "/" <> fromMaybe mempty resourceFrom) ||
-	   not (fromString "CHEOGRAM%" `T.isPrefixOf` mid)) then
-		writeStanzaChan toVitelity $ mkSMS tel txt
-	else
-		return () -- TODO: Error?
-	where
-	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") resourceFrom, fromString ") ", body]
-componentMessage _ toVitelity _ _ existingRoom bareFrom resourceFrom tel body =
-	writeStanzaChan toVitelity $ mkSMS tel txt
-	where
-	txt = mconcat [fromString "(", fromNick, fromString " whispers) ", body]
-	fromNick
-		| fmap bareTxt existingRoom == Just bareFrom = fromMaybe (fromString "nonick") resourceFrom
-		| otherwise = bareFrom
-
-componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
-	| Just tel <- strNode <$> jidNode to,
-	  Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
+componentMessage db toVitelity m _ _ _ tel _
+	| Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
 		existingRoom <- tcGetJID db tel "joined"
 		existingInvite <- tcGetJID db tel "invited"
 		let txt = mconcat [
@@ -144,20 +126,65 @@ componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just t
 		when (existingRoom /= Just (inviteMUC invite) && existingInvite /= Just (inviteMUC invite)) $ do
 			tcPutJID db tel "invited" (inviteMUC invite)
 			writeStanzaChan toVitelity $ mkSMS tel txt
-componentStanza db _ toComponent (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
-	| Just tel <- strNode <$> jidNode to,
-	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
+componentMessage db toVitelity (m@Message { messageType = MessageGroupChat }) existingRoom bareFrom resourceFrom tel (Just body) = do
+	if fmap bareTxt existingRoom == Just bareFrom && (
+	   existingRoom /= parseJID (bareFrom <> fromString "/" <> fromMaybe mempty resourceFrom) ||
+	   not (fromString "CHEOGRAM%" `T.isPrefixOf` (fromMaybe mempty $ messageID m))) then
+		writeStanzaChan toVitelity $ mkSMS tel txt
+	else
+		return () -- TODO: Error?
+	where
+	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") resourceFrom, fromString ") ", body]
+componentMessage _ toVitelity _ existingRoom bareFrom resourceFrom tel (Just body) =
+	writeStanzaChan toVitelity $ mkSMS tel txt
+	where
+	txt = mconcat [fromString "(", fromNick, fromString " whispers) ", body]
+	fromNick
+		| fmap bareTxt existingRoom == Just bareFrom = fromMaybe (fromString "nonick") resourceFrom
+		| otherwise = bareFrom
+componentMessage _ _ _ _ _ _ _ _ = return ()
+
+componentStanza db _ toComponent _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
+	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
 	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
 	  (_:_) <- code "104" status =
 		queryDisco toComponent from to
-componentStanza db toVitelity _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
+componentStanza db toVitelity toComponent componentHost (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| Just tel <- strNode <$> jidNode to,
-	  Just body <- getBody "jabber:component:accept" m = do
+	  T.length tel == 11 && (fromString "1") `T.isPrefixOf` tel = do
 		existingRoom <- tcGetJID db tel "joined"
-		componentMessage db toVitelity (messageType m) (fromMaybe mempty $ messageID m) existingRoom (bareTxt from) resourceFrom tel body
+		componentMessage db toVitelity m existingRoom (bareTxt from) resourceFrom tel $
+			getBody "jabber:component:accept" m
+	| Just jid <- (`telToJid` (fromString componentHost)) =<< strNode <$> jidNode to =
+		writeStanzaChan toComponent $ m {
+			messageFrom = Just to,
+			messageTo = Just from,
+			messageType = MessageError,
+			messagePayloads = messagePayloads m <> [
+				Element (fromString "{jabber:component:accept}error")
+				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
+				[
+					NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}gone") []
+						[NodeContent $ ContentText $ formatJID jid],
+					NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text")
+						[(fromString "xml:lang", [ContentText $ fromString "en"])]
+						[NodeContent $ ContentText $ fromString "JID must include country code: " <> formatJID jid]
+				]
+			]
+		}
+	| otherwise = writeStanzaChan toComponent $ m {
+			messageFrom = Just to,
+			messageTo = Just from,
+			messageType = MessageError,
+			messagePayloads = messagePayloads m <> [
+				Element (fromString "{jabber:component:accept}error")
+				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
+				[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
+			]
+		}
 	where
 	resourceFrom = strResource <$> jidResource from
-componentStanza db toVitelity toComponent (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
+componentStanza db toVitelity toComponent _ (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
 	| Just tel <- strNode <$> jidNode to,
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
 	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
@@ -172,7 +199,7 @@ componentStanza db toVitelity toComponent (ReceivedPresence p@(Presence { presen
 	where
 	bareMUC = bareTxt from
 	roomNick = fromMaybe mempty (strResource <$> jidResource from)
-componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = PresenceUnavailable, presenceFrom = Just from, presenceTo = Just to }))
+componentStanza db toVitelity _ _ (ReceivedPresence p@(Presence { presenceType = PresenceUnavailable, presenceFrom = Just from, presenceTo = Just to }))
 	| Just tel <- strNode <$> jidNode to,
 	  [] <- code "303" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren
 	        =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p = do
@@ -180,7 +207,7 @@ componentStanza db toVitelity _ (ReceivedPresence p@(Presence { presenceType = P
 		when (existingRoom == Just from) $ do
 			True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
 			writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareTxt from)
-componentStanza db _ toComponent (ReceivedPresence p@(Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+componentStanza db _ toComponent _ (ReceivedPresence p@(Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	writeStanzaChan toComponent $ (emptyPresence PresenceSubscribed) {
 		presenceTo = Just from,
 		presenceFrom = Just to
@@ -189,12 +216,12 @@ componentStanza db _ toComponent (ReceivedPresence p@(Presence { presenceType = 
 		presenceTo = Just from,
 		presenceFrom = Just to
 	}
-componentStanza db _ toComponent (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+componentStanza db _ toComponent _ (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
 		presenceTo = Just from,
 		presenceFrom = Just to
 	}
-componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
+componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p =
 		writeStanzaChan toComponent $ (emptyIQ IQResult) {
@@ -210,7 +237,7 @@ componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just 
 					] []
 				]
 		}
-componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
+componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Just _ <- jidNode to,
 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p =
 		writeStanzaChan toComponent $ (emptyIQ IQResult) {
@@ -224,7 +251,7 @@ componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just 
 					] []
 				]
 		}
-componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just (to@JID {jidNode = Nothing}), iqID = id, iqPayload = Just p }))
+componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just (to@JID {jidNode = Nothing}), iqID = id, iqPayload = Just p }))
 	| [_] <- isNamed (fromString "{jabber:iq:gateway}query") p =
 		writeStanzaChan toComponent $ (emptyIQ IQResult) {
 			iqTo = Just from,
@@ -236,14 +263,14 @@ componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just 
 					NodeElement $ Element (fromString "{jabber:iq:gateway}prompt") [ ] [NodeContent $ ContentText $ fromString "Phone Number"]
 				]
 		}
-componentStanza db _ toComponent (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqPayload = Just p }))
+componentStanza db _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		let vars = mapMaybe (attributeText (fromString "var")) $
 			isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query
 		let muc_membersonly = fromEnum $ fromString "muc_membersonly" `elem` vars
 		True <- TC.runTCM $ TC.put db (T.unpack (formatJID from) <> "\0muc_membersonly") muc_membersonly
 		return ()
-componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = typ, iqFrom = Just from, iqTo = to, iqID = id }))
+componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = typ, iqFrom = Just from, iqTo = to, iqID = id }))
 	| typ `elem` [IQGet, IQSet] =
 		writeStanzaChan toComponent $ (emptyIQ IQError) {
 			iqTo = Just from,
@@ -253,9 +280,9 @@ componentStanza _ _ toComponent (ReceivedIQ (IQ { iqType = typ, iqFrom = Just fr
 				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 				[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
 		}
-componentStanza _ _ _ _ = return ()
+componentStanza _ _ _ _ _ = return ()
 
-component db toVitelity toComponent = do
+component db toVitelity toComponent componentHost = do
 	forkXMPP $ forever $ flip catchError (liftIO . print) $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 		putStanza $ stanza
@@ -263,7 +290,7 @@ component db toVitelity toComponent = do
 	--forever $ getStanza >>= liftIO . componentStanza db toVitelity
 	forever $ flip catchError (liftIO . print) $ do
 		s <- getStanza
-		liftIO $ componentStanza db toVitelity toComponent s
+		liftIO $ componentStanza db toVitelity toComponent componentHost s
 
 telToVitelity tel
 	| not $ all isDigit $ T.unpack tel = Nothing
@@ -307,7 +334,7 @@ sendToRoom toComponent componentHost tel room msg = do
 	uuid <- (fmap.fmap) UUID.toString UUID.nextUUID
 	writeStanzaChan toComponent $ (emptyMessage MessageGroupChat) {
 		messageTo = parseJID $ bareTxt room,
-		messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+		messageFrom = telToJid tel (fromString componentHost),
 		messageID = Just $ fromString ("CHEOGRAM%" <> fromMaybe "UUIDFAIL" uuid),
 		messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText msg]]
 	}
@@ -317,7 +344,7 @@ leaveRoom db toComponent componentHost tel reason = do
 	forM_ existingRoom $ \leaveRoom -> do
 		writeStanzaChan toComponent $ (emptyPresence PresenceUnavailable) {
 			presenceTo = Just leaveRoom,
-			presenceFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+			presenceFrom = telToJid tel (fromString componentHost),
 			presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString reason]]
 		}
 		True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
@@ -326,7 +353,7 @@ leaveRoom db toComponent componentHost tel reason = do
 joinRoom db toComponent componentHost tel room = do
 	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
 		presenceTo = Just room,
-		presenceFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+		presenceFrom = telToJid tel (fromString componentHost),
 		presencePayloads = [Element (fromString "{http://jabber.org/protocol/muc}x") [] [
 			NodeElement $ Element (fromString "{http://jabber.org/protocol/muc}history") [(fromString "{http://jabber.org/protocol/muc}maxchars", [ContentText $ fromString "0"])] []
 		]]
@@ -383,7 +410,7 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 			uuid <- (fmap.fmap) UUID.toString UUID.nextUUID
 			writeStanzaChan toComponent $ (emptyMessage MessageChat) {
 				messageTo = Just to,
-				messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+				messageFrom = telToJid tel (fromString componentHost),
 				messageID = Just $ fromString ("CHEOGRAM%" <> fromMaybe "UUIDFAIL" uuid),
 				messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText msg]]
 			}
@@ -465,7 +492,7 @@ main = do
 	forkIO $ forever $ threadDelay 1500000 >> atomically (writeTChan chunks TimerExpire)
 	forkIO $ multipartStitcher db chunks toVitelity toComponent name
 
-	forkIO $ void $ runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent)
+	forkIO $ void $ runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name)
 
 	let Just vitelityParsedJid = parseJID $ fromString vitelityJid
 	runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
