@@ -124,6 +124,18 @@ code str status =
 	<>
 	hasAttributeText (fromString "code") (== (fromString str)) status
 
+componentMessage db toVitelity (m@Message { messageType = MessageError }) _ _ _ tel body = do
+	let errorTxt = fmap (mconcat . elementText) $ listToMaybe $
+		isNamed (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text") =<<
+		elementChildren =<< isNamed (fromString "{jabber:component:accept}error") =<< messagePayloads m
+	writeStanzaChan toVitelity $ mkSMS tel $
+		mconcat [
+			fromString "(ERROR from ",
+			maybe (fromString "unspecified") formatJID (messageFrom m),
+			fromString ")",
+			maybe mempty (fromString "\n"<>) errorTxt,
+			maybe mempty (fromString "\n"<>) body
+		]
 componentMessage db toVitelity m existingRoom _ _ tel _
 	| Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
 		existingInvite <- tcGetJID db tel "invited"
@@ -352,13 +364,20 @@ data Command = Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetN
 
 parseCommand txt room nick componentHost
 	| Just jid <- T.stripPrefix (fromString "/invite ") txt =
-		InviteCmd <$> (parseJIDrequireNode jid <|> telToJid jid (fromString componentHost))
+		InviteCmd <$> (
+			parseJIDrequireNode jid <|>
+			telToJid jid (fromString componentHost)
+		)
 	| Just room <- T.stripPrefix (fromString "/join ") txt =
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
 	| Just nick <- T.stripPrefix (fromString "/nick ") txt = Just $ SetNick nick
 	| Just input <- T.stripPrefix (fromString "/msg ") txt =
 		let (to, msg) = T.breakOn (fromString " ") input in
-		Whisper <$> (parseJIDrequireNode to <|> telToJid to (fromString componentHost)) <*> pure msg
+		Whisper <$> (
+			parseJIDrequireNode to <|>
+			telToJid to (fromString componentHost) <|>
+			(parseJID =<< fmap (\r -> bareTxt r <> fromString "/" <> to) room)
+		) <*> pure msg
 	| txt == fromString "/join" = Just JoinInvited
 	| txt == fromString "/leave" = Just Leave
 	| txt == fromString "/part" = Just Leave
