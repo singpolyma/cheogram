@@ -480,9 +480,16 @@ viteltiy db chunks toVitelity toComponent componentHost = do
 	putStanza $ emptyPresence PresenceAvailable
 
 	forkXMPP $ forever $ flip catchError (liftIO . print) $ do
-		stanza <- liftIO $ atomically $ readTChan toVitelity
-		putStanza $ stanza
 		wait <- liftIO $ getStdRandom (randomR (400000,1500000))
+		stanza <- liftIO $ atomically $ readTChan toVitelity
+		forM_ (strNode <$> (jidNode =<< stanzaTo stanza)) $ \tel -> do
+			welcomed <- maybe False toEnum <$> liftIO (TC.runTCM $ TC.get db $ tcKey tel "welcomed")
+			when (not welcomed) $ do
+				putStanza $ mkSMS tel $ fromString "Welcome to CheoGram! You can chat with groups of your friends, right here by SMS. Send /help to learn more."
+				True <- liftIO (TC.runTCM $ TC.put db (tcKey tel "welcomed") (fromEnum True))
+				liftIO $ threadDelay wait
+
+		putStanza $ stanza
 		liftIO $ threadDelay wait
 
 	forever $ flip catchError (liftIO . print) $ do
