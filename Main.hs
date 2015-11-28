@@ -45,7 +45,7 @@ mkSMS tel txt = (emptyMessage MessageChat) {
 	messagePayloads = [Element (fromString "{jabber:client}body") [] [NodeContent $ ContentText txt]]
 }
 
-tcKey tel key = T.unpack tel <> "\0" <> key
+tcKey tel key = fromMaybe "BADTEL" (fmap T.unpack $ normalizeTel tel) <> "\0" <> key
 tcGetJID db tel key = (parseJID . fromString =<<) <$> TC.runTCM (TC.get db $ tcKey tel key)
 tcPutJID db tel key jid = do
 	True <- TC.runTCM (TC.put db (tcKey tel key) (T.unpack $ formatJID jid))
@@ -107,18 +107,30 @@ forkXMPP kid = do
 bareTxt (JID (Just node) domain _) = mconcat [strNode node, fromString "@", strDomain domain]
 bareTxt (JID Nothing domain _) = strDomain domain
 
+nickFor db jid existingRoom
+	| fmap bareTxt existingRoom == Just bareFrom = return $ fromMaybe (fromString "nonick") resourceFrom
+	| Just tel <- normalizeTel =<< strNode <$> jidNode jid = do
+		mnick <- TC.runTCM (TC.get db $ tcKey tel "nick")
+		case mnick of
+			Just nick -> return (tel <> fromString " \"" <> fromString nick <> fromString "\"")
+			Nothing -> return tel
+	| otherwise = return $ bareFrom
+	where
+	bareFrom = bareTxt jid
+	resourceFrom = strResource <$> jidResource jid
+
 code str status =
 	hasAttributeText (fromString "{http://jabber.org/protocol/muc#user}code") (== (fromString str)) status
 	<>
 	hasAttributeText (fromString "code") (== (fromString str)) status
 
-componentMessage db toVitelity m _ _ _ tel _
+componentMessage db toVitelity m existingRoom _ _ tel _
 	| Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
-		existingRoom <- tcGetJID db tel "joined"
 		existingInvite <- tcGetJID db tel "invited"
+		nick <- nickFor db (inviteFrom invite) existingRoom
 		let txt = mconcat [
 				fromString "* ",
-				bareTxt (inviteFrom invite), -- TODO: or MUC nick
+				nick,
 				fromString " has invited you to a group",
 				maybe mempty (\t -> fromString ", saying \"" <> t <> fromString "\"") (inviteText invite),
 				fromString "\nYou can switch to this group by sending /join"
@@ -135,13 +147,10 @@ componentMessage db toVitelity (m@Message { messageType = MessageGroupChat }) ex
 		return () -- TODO: Error?
 	where
 	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") resourceFrom, fromString ") ", body]
-componentMessage _ toVitelity _ existingRoom bareFrom resourceFrom tel (Just body) =
+componentMessage db toVitelity (Message { messageFrom = Just from }) existingRoom _ _ tel (Just body) = do
+	nick <- nickFor db from existingRoom
+	let txt = mconcat [fromString "(", nick, fromString " whispers) ", body]
 	writeStanzaChan toVitelity $ mkSMS tel txt
-	where
-	txt = mconcat [fromString "(", fromNick, fromString " whispers) ", body]
-	fromNick
-		| fmap bareTxt existingRoom == Just bareFrom = fromMaybe (fromString "nonick") resourceFrom
-		| otherwise = bareFrom
 componentMessage _ _ _ _ _ _ _ _ = return ()
 
 componentStanza db _ toComponent _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
@@ -324,11 +333,13 @@ telToVitelity tel
 	| T.length tel == 11, Just tel' <- T.stripPrefix (fromString "1") tel = parseJID (tel' <> fromString "@sms")
 	| otherwise = Nothing
 
-telToJid tel host
+normalizeTel tel
 	| not $ all isDigit $ T.unpack tel = Nothing
-	| T.length tel == 10 = parseJID (T.cons '1' tel <> fromString "@" <> host)
-	| T.length tel == 11, (fromString "1") `T.isPrefixOf` tel = parseJID (tel <> fromString "@" <> host)
+	| T.length tel == 10 = Just $ T.cons '1' tel
+	| T.length tel == 11, (fromString "1") `T.isPrefixOf` tel = Just tel
 	| otherwise = Nothing
+
+telToJid tel host = parseJID =<< (<> fromString "@" <> host) <$> normalizeTel tel
 
 parseJIDrequireNode txt
 	| Just _ <- jidNode =<< jid = jid
