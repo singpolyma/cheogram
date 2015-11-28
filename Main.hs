@@ -264,7 +264,7 @@ component db toVitelity toComponent = do
 		s <- getStanza
 		liftIO $ componentStanza db toVitelity toComponent s
 
-data Command = Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetNick Text
+data Command = Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
 	deriving (Show, Eq)
 
 parseCommand txt nick
@@ -273,6 +273,9 @@ parseCommand txt nick
 	| Just room <- T.stripPrefix (fromString "/join ") txt =
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
 	| Just nick <- T.stripPrefix (fromString "/nick ") txt = Just $ SetNick nick
+	| Just input <- T.stripPrefix (fromString "/msg ") txt =
+		let (to, msg) = T.breakOn (fromString " ") input in
+		Whisper <$> parseJID to <*> pure msg
 	| txt == fromString "/join" = Just JoinInvited
 	| txt == fromString "/leave" = Just Leave
 	| txt == fromString "/part" = Just Leave
@@ -357,6 +360,14 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 
 			True <- TC.runTCM (TC.put db (tcKey tel "nick") (T.unpack nick))
 			return ()
+		Just (Whisper to msg) -> do
+			uuid <- (fmap.fmap) UUID.toString UUID.nextUUID
+			writeStanzaChan toComponent $ (emptyMessage MessageChat) {
+				messageTo = Just to,
+				messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+				messageID = Just $ fromString ("CHEOGRAM%" <> fromMaybe "UUIDFAIL" uuid),
+				messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText msg]]
+			}
 		Just (Send msg) -> do
 			existingRoom <- tcGetJID db tel "joined"
 			case existingRoom of
