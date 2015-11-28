@@ -251,6 +251,32 @@ componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Jus
 					] []
 				]
 		}
+componentStanza _ _ toComponent componentHost (ReceivedIQ (iq@IQ { iqType = IQSet, iqFrom = Just from, iqTo = Just (to@JID {jidNode = Nothing}), iqID = id, iqPayload = Just p }))
+	| [query] <- isNamed (fromString "{jabber:iq:gateway}query") p,
+	  [prompt] <- isNamed (fromString "{jabber:iq:gateway}prompt") =<< elementChildren query =
+		case telToJid (T.filter isDigit $ mconcat $ elementText prompt) (fromString componentHost) of
+			Just jid ->
+				writeStanzaChan toComponent $ (emptyIQ IQResult) {
+					iqTo = Just from,
+					iqFrom = Just to,
+					iqID = id,
+					iqPayload = Just $ Element (fromString "{jabber:iq:gateway}query") []
+						[NodeElement $ Element (fromString "{jabber:iq:gateway}jid") [ ] [NodeContent $ ContentText $ formatJID jid]]
+				}
+			Nothing ->
+				writeStanzaChan toComponent $ iq {
+					iqTo = Just from,
+					iqFrom = Just to,
+					iqType = IQError,
+					iqPayload = Just $ Element (fromString "{jabber:component:accept}error")
+						[(fromString "{jabber:component:accept}type", [ContentText $ fromString "modify"])]
+						[
+							NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}not-acceptable") [] [],
+							NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text")
+								[(fromString "xml:lang", [ContentText $ fromString "en"])]
+								[NodeContent $ ContentText $ fromString "Only US/Canada telephone numbers accepted"]
+						]
+				}
 componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just (to@JID {jidNode = Nothing}), iqID = id, iqPayload = Just p }))
 	| [_] <- isNamed (fromString "{jabber:iq:gateway}query") p =
 		writeStanzaChan toComponent $ (emptyIQ IQResult) {
@@ -270,12 +296,12 @@ componentStanza db _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom =
 		let muc_membersonly = fromEnum $ fromString "muc_membersonly" `elem` vars
 		True <- TC.runTCM $ TC.put db (T.unpack (formatJID from) <> "\0muc_membersonly") muc_membersonly
 		return ()
-componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = typ, iqFrom = Just from, iqTo = to, iqID = id }))
+componentStanza _ _ toComponent _ (ReceivedIQ (iq@IQ { iqType = typ }))
 	| typ `elem` [IQGet, IQSet] =
-		writeStanzaChan toComponent $ (emptyIQ IQError) {
-			iqTo = Just from,
-			iqFrom = to,
-			iqID = id,
+		writeStanzaChan toComponent $ iq {
+			iqTo = iqFrom iq,
+			iqFrom = iqTo iq,
+			iqType = IQError,
 			iqPayload = Just $ Element (fromString "{jabber:component:accept}error")
 				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 				[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
