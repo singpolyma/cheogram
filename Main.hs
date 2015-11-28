@@ -288,7 +288,7 @@ data Command = Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetN
 
 parseCommand txt room nick componentHost
 	| Just jid <- T.stripPrefix (fromString "/invite ") txt =
-		InviteCmd <$> parseJID jid
+		InviteCmd <$> (parseJIDrequireNode jid <|> telToJid jid (fromString componentHost))
 	| Just room <- T.stripPrefix (fromString "/join ") txt =
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
 	| Just nick <- T.stripPrefix (fromString "/nick ") txt = Just $ SetNick nick
@@ -346,31 +346,32 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 			leaveRoom db toComponent componentHost tel "Joined a different room."
 			joinRoom db toComponent componentHost tel room
 		Just Leave -> leaveRoom db toComponent componentHost tel "Left"
-		Just (InviteCmd jid) -> do
-				forM_ existingRoom $ \room -> do
-					writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
-						messageTo = Just room,
-						messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
-						messagePayloads = [
-							Element (fromString "{http://jabber.org/protocol/muc#user}x") [] [
-								NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#user}invite") [
-									(fromString "{http://jabber.org/protocol/muc#user}to", [ContentText $ formatJID jid])
-								] []
-							]
+		Just (InviteCmd jid)
+			| Just room <- existingRoom -> do
+				writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
+					messageTo = Just room,
+					messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+					messagePayloads = [
+						Element (fromString "{http://jabber.org/protocol/muc#user}x") [] [
+							NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#user}invite") [
+								(fromString "{http://jabber.org/protocol/muc#user}to", [ContentText $ formatJID jid])
+							] []
 						]
-					}
+					]
+				}
 
-					writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
-						messageTo = Just jid,
-						messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
-						messagePayloads = [
-							Element (fromString "{jabber:x:conference}x") [
-								(fromString "{jabber:x:conference}jid", [ContentText $ formatJID room])
-							] [],
-							Element (fromString "{jabber:component:accept}body") []
-								[NodeContent $ ContentText $ mconcat [tel, fromString " has invited you to join ", formatJID room]]
-						]
-					}
+				writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
+					messageTo = Just jid,
+					messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+					messagePayloads = [
+						Element (fromString "{jabber:x:conference}x") [
+							(fromString "{jabber:x:conference}jid", [ContentText $ formatJID room])
+						] [],
+						Element (fromString "{jabber:component:accept}body") []
+							[NodeContent $ ContentText $ mconcat [tel, fromString " has invited you to join ", formatJID room]]
+					]
+				}
+			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a room")
 		Just (SetNick nick) -> do
 			forM_ existingRoom $ \room -> do
 				let toJoin = parseJID (bareTxt room <> fromString "/" <> nick)
