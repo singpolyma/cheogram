@@ -1,4 +1,5 @@
 {-# LANGUAGE PackageImports #-}
+import Control.Error
 import System.Environment
 import Data.Time
 import Data.Char
@@ -415,6 +416,21 @@ componentStanza _ _ toComponent _ (ReceivedIQ (iq@IQ { iqType = typ }))
 		}
 componentStanza _ _ _ _ _ = return ()
 
+
+storePresence db (ReceivedPresence p@(Presence { presenceType = PresenceUnavailable, presenceFrom = Just from })) = do
+	presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
+	True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ filter (/=resourceFrom) presence))
+	return ()
+	where
+	resourceFrom = fromMaybe "" (T.unpack . strResource <$> jidResource from)
+storePresence db (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from })) = do
+	presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
+	True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ resourceFrom:presence))
+	return ()
+	where
+	resourceFrom = fromMaybe "" (T.unpack . strResource <$> jidResource from)
+storePresence _ _ = return ()
+
 component db toVitelity toComponent componentHost = do
 	forkXMPP $ forever $ flip catchError (liftIO . print) $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
@@ -423,6 +439,7 @@ component db toVitelity toComponent componentHost = do
 	--forever $ getStanza >>= liftIO . componentStanza db toVitelity
 	forever $ flip catchError (liftIO . print) $ do
 		s <- getStanza
+		liftIO $ storePresence db s
 		liftIO $ componentStanza db toVitelity toComponent componentHost s
 
 telToVitelity tel
@@ -445,7 +462,7 @@ parseJIDrequireNode txt
 	where
 	jid = parseJID txt
 
-data Command = Help | Create Text | Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
+data Command = Help | Create Text | Join JID | JoinInvited | Send Text | Who | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentHost
@@ -468,6 +485,7 @@ parseCommand txt room nick componentHost
 	| txt == fromString "/join" = Just JoinInvited
 	| txt == fromString "/leave" = Just Leave
 	| txt == fromString "/part" = Just Leave
+	| txt == fromString "/who" = Just Who
 	| txt == fromString "/help" = Just Help
 	| otherwise = Just $ Send txt
 
@@ -539,6 +557,10 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			leaveRoom db toComponent componentHost tel "Joined a different room."
 			joinRoom db toComponent componentHost tel room
 		Just Leave -> leaveRoom db toComponent componentHost tel "Typed /leave"
+		Just Who -> do
+			let room = fromMaybe "" (fmap (T.unpack . bareTxt) existingRoom)
+			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (room <> "\0presence"))
+			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Group participants: " <> intercalate ", " presence
 		Just (InviteCmd jid)
 			| Just room <- existingRoom -> do
 				membersonly <- maybe False toEnum <$> TC.runTCM (TC.get db (T.unpack (bareTxt room) <> "\0muc_membersonly"))
@@ -603,8 +625,9 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a room")
 		Just Help -> writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
 				"/create (one-word group name) - create new group\n",
-				"/nick (desired name) - set nick\n",
 				"/invite (number or JID) - invite to group\n",
+				"/who - list group participants\n",
+				"/nick (desired name) - set nick\n",
 				"/msg (user) - whisper to group member\n",
 				"/leave - leave group"
 			]
