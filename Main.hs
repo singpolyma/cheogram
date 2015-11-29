@@ -3,6 +3,7 @@ import System.Environment
 import Data.Time
 import Data.Char
 import System.Random
+import System.Random.Shuffle (shuffleM)
 import Data.String
 import Network
 import Network.Protocol.XMPP
@@ -455,7 +456,8 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 				Just room -> joinRoom db toComponent componentHost tel room
 				Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You have not recently been invited to a group")
 		Just (Create name) -> do
-			validRoom <- createRoom toComponent componentHost conferenceServers (T.unpack tel) (T.unpack name)
+			servers <- shuffleM conferenceServers
+			validRoom <- createRoom toComponent componentHost servers (T.unpack tel) (T.unpack name)
 			when (not validRoom) $
 				writeStanzaChan toVitelity $ mkSMS tel (fromString "Invalid room name")
 		Just (Join room) -> do
@@ -584,18 +586,18 @@ openTokyoCabinet pth = TC.runTCM $ do
 	return db
 
 main = do
-	[name, host, port, secret, vitelityJid, vitelityPassword, conference] <- getArgs
+	(name:host:port:secret:vitelityJid:vitelityPassword:conferences) <- getArgs
 	db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
 	chunks <- atomically newTChan
 	toVitelity <- atomically newTChan
 	toComponent <- atomically newTChan
 
 	forkIO $ forever $ threadDelay 1500000 >> atomically (writeTChan chunks TimerExpire)
-	forkIO $ multipartStitcher db chunks toVitelity toComponent name [conference]
+	forkIO $ multipartStitcher db chunks toVitelity toComponent name conferences
 
 	forkIO $ void $ runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name)
 
 	let Just vitelityParsedJid = parseJID $ fromString vitelityJid
 	runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
 		bindJID vitelityParsedJid
-		viteltiy db chunks toVitelity toComponent name [conference]
+		viteltiy db chunks toVitelity toComponent name conferences
