@@ -463,7 +463,7 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 		Just (Join room) -> do
 			leaveRoom db toComponent componentHost tel "Joined a different room."
 			joinRoom db toComponent componentHost tel room
-		Just Leave -> leaveRoom db toComponent componentHost tel "Left"
+		Just Leave -> leaveRoom db toComponent componentHost tel "Typed /leave"
 		Just (InviteCmd jid)
 			| Just room <- existingRoom -> do
 				writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
