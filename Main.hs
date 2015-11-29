@@ -310,6 +310,22 @@ componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Jus
 					NodeElement $ Element (fromString "{jabber:iq:gateway}prompt") [ ] [NodeContent $ ContentText $ fromString "Phone Number"]
 				]
 		}
+componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQError, iqFrom = Just from, iqTo = Just to }))
+	| (strNode <$> jidNode to) == Just (fromString "create"),
+	  Just resource <- strResource <$> jidResource to =
+		case T.splitOn (fromString "|") resource of
+			(tel:_) -> do
+				nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
+				let Just room = parseJID $ bareTxt from <> fromString "/" <> nick
+				joinRoom db toComponent componentHost tel room
+			_ -> return () -- Invalid packet, ignore
+componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to }))
+	| (strNode <$> jidNode to) == Just (fromString "create"),
+	  Just resource <- strResource <$> jidResource to =
+		case map T.unpack $ T.splitOn (fromString "|") resource of
+			(tel:name:[]) -> void $ createRoom toComponent componentHost [T.unpack $ strDomain $ jidDomain from] tel (name <> "_" <> tel)
+			(tel:name:servers) -> void $ createRoom toComponent componentHost servers tel name
+			_ -> return () -- Invalid packet, ignore
 componentStanza db _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		let vars = mapMaybe (attributeText (fromString "var")) $
@@ -359,7 +375,7 @@ parseJIDrequireNode txt
 	where
 	jid = parseJID txt
 
-data Command = Help | Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
+data Command = Help | Create Text | Join JID | JoinInvited | Send Text | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentHost
@@ -370,6 +386,7 @@ parseCommand txt room nick componentHost
 		)
 	| Just room <- T.stripPrefix (fromString "/join ") txt =
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
+	| Just t <- T.stripPrefix (fromString "/create ") txt = Just $ Create t
 	| Just nick <- T.stripPrefix (fromString "/nick ") txt = Just $ SetNick nick
 	| Just input <- T.stripPrefix (fromString "/msg ") txt =
 		let (to, msg) = T.breakOn (fromString " ") input in
@@ -416,7 +433,18 @@ joinRoom db toComponent componentHost tel room = do
 		]]
 	}
 
-processSMS db toVitelity toComponent componentHost tel txt = do
+createRoom :: TChan StanzaRec -> String -> [String] -> String -> String -> IO Bool
+createRoom toComponent componentHost (server:otherServers) tel name =
+	-- First we check if this room exists on the server already
+	case to of
+		Just t -> queryDisco toComponent t jid >> return True
+		Nothing -> return False
+	where
+	-- TODO: to
+	to = parseJID $ fromString $ name <> "@" <> server
+	Just jid = parseJID $ fromString $ "create@" <> componentHost <> "/" <> intercalate "|" (tel:name:otherServers)
+
+processSMS db toVitelity toComponent componentHost conferenceServers tel txt = do
 	nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
 	existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
 	case parseCommand txt existingRoom nick componentHost of
@@ -426,6 +454,10 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 			case toJoin of
 				Just room -> joinRoom db toComponent componentHost tel room
 				Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You have not recently been invited to a group")
+		Just (Create name) -> do
+			validRoom <- createRoom toComponent componentHost conferenceServers (T.unpack tel) (T.unpack name)
+			when (not validRoom) $
+				writeStanzaChan toVitelity $ mkSMS tel (fromString "Invalid room name")
 		Just (Join room) -> do
 			leaveRoom db toComponent componentHost tel "Joined a different room."
 			joinRoom db toComponent componentHost tel room
@@ -476,6 +508,7 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 			| Just room <- existingRoom -> sendToRoom toComponent componentHost tel room msg
 			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a room")
 		Just Help -> writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
+				"/create (one-word group name) - create new group\n",
 				"/nick (desired name) - set nick\n",
 				"/invite (number or JID) - invite to group\n",
 				"/msg (user) - whisper to group member\n",
@@ -483,7 +516,7 @@ processSMS db toVitelity toComponent componentHost tel txt = do
 			]
 		Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You sent an invalid message")
 
-viteltiy db chunks toVitelity toComponent componentHost = do
+viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 	putStanza $ emptyPresence PresenceAvailable
 
 	forkXMPP $ forever $ flip catchError (liftIO . print) $ do
@@ -504,7 +537,7 @@ viteltiy db chunks toVitelity toComponent componentHost = do
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
 			(Just tel, Just txt) ->
 				case parseOnly (chunkParser tel) txt of
-					Left _ -> processSMS db toVitelity toComponent componentHost tel txt
+					Left _ -> processSMS db toVitelity toComponent componentHost conferenceServers tel txt
 					Right chunk -> atomically $ writeTChan chunks chunk
 			_ -> return ()
 
@@ -516,7 +549,7 @@ chunkParser tel =
 	(string (fromString ":of:") *> decimal) <*>
 	(string (fromString ":") *> takeText)
 
-multipartStitcher db chunks toVitelity toComponent componentHost =
+multipartStitcher db chunks toVitelity toComponent componentHost conferenceServers =
 	go mempty
 	where
 	go state = do
@@ -531,7 +564,7 @@ multipartStitcher db chunks toVitelity toComponent componentHost =
 			_ -> (mempty, state)
 
 		forM_ (Map.toList done) $ \((tel, _), (_, items)) ->
-			processSMS db toVitelity toComponent componentHost tel $
+			processSMS db toVitelity toComponent componentHost conferenceServers tel $
 				mconcat $ map snd $ Map.toAscList items
 
 		let (expired, unexpired) = Map.partition (\(t, _) -> time > 60 `addUTCTime` t) cont
@@ -551,18 +584,18 @@ openTokyoCabinet pth = TC.runTCM $ do
 	return db
 
 main = do
-	[name, host, port, secret, vitelityJid, vitelityPassword] <- getArgs
+	[name, host, port, secret, vitelityJid, vitelityPassword, conference] <- getArgs
 	db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
 	chunks <- atomically newTChan
 	toVitelity <- atomically newTChan
 	toComponent <- atomically newTChan
 
 	forkIO $ forever $ threadDelay 1500000 >> atomically (writeTChan chunks TimerExpire)
-	forkIO $ multipartStitcher db chunks toVitelity toComponent name
+	forkIO $ multipartStitcher db chunks toVitelity toComponent name [conference]
 
 	forkIO $ void $ runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name)
 
 	let Just vitelityParsedJid = parseJID $ fromString vitelityJid
 	runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
 		bindJID vitelityParsedJid
-		viteltiy db chunks toVitelity toComponent name
+		viteltiy db chunks toVitelity toComponent name [conference]
