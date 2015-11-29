@@ -318,6 +318,7 @@ componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQErro
 			(tel:_) -> do
 				nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
 				let Just room = parseJID $ bareTxt from <> fromString "/" <> nick
+				leaveRoom db toComponent componentHost tel "Joined a different room."
 				joinRoom db toComponent componentHost tel room
 			_ -> return () -- Invalid packet, ignore
 componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to }))
@@ -422,7 +423,6 @@ leaveRoom db toComponent componentHost tel reason = do
 			presenceFrom = telToJid tel (fromString componentHost),
 			presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString reason]]
 		}
-		True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
 		return ()
 
 joinRoom db toComponent componentHost tel room = do
@@ -453,7 +453,9 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			invitedRoom <- tcGetJID db tel "invited"
 			let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> fromString "/" <> nick)
 			case toJoin of
-				Just room -> joinRoom db toComponent componentHost tel room
+				Just room -> do
+					leaveRoom db toComponent componentHost tel "Joined a different room."
+					joinRoom db toComponent componentHost tel room
 				Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You have not recently been invited to a group")
 		Just (Create name) -> do
 			servers <- shuffleM conferenceServers
@@ -468,7 +470,7 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			| Just room <- existingRoom -> do
 				writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
 					messageTo = Just room,
-					messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+					messageFrom = telToJid tel (fromString componentHost),
 					messagePayloads = [
 						Element (fromString "{http://jabber.org/protocol/muc#user}x") [] [
 							NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#user}invite") [
@@ -480,7 +482,7 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 
 				writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
 					messageTo = Just jid,
-					messageFrom = parseJID $ tel <> fromString "@" <> fromString componentHost,
+					messageFrom = telToJid tel (fromString componentHost),
 					messagePayloads = [
 						Element (fromString "{jabber:x:conference}x") [
 							(fromString "{jabber:x:conference}jid", [ContentText $ formatJID room])
