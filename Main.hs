@@ -533,6 +533,23 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 		Just Leave -> leaveRoom db toComponent componentHost tel "Typed /leave"
 		Just (InviteCmd jid)
 			| Just room <- existingRoom -> do
+				membersonly <- maybe False toEnum <$> TC.runTCM (TC.get db (T.unpack (bareTxt room) <> "\0muc_membersonly"))
+				when membersonly $ do
+					-- Try to add everyone we invite as an owner also
+					uuid <- (fmap.fmap) UUID.toString UUID.nextUUID
+					writeStanzaChan toComponent $ (emptyIQ IQSet) {
+						iqTo = Just room,
+						iqFrom = telToJid tel (fromString componentHost),
+						iqID = fmap fromString uuid,
+						iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#admin}admin") [] [
+							NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#admin}item")
+								[
+									(fromString "{http://jabber.org/protocol/muc#admin}affiliation", [ContentText $ fromString "owner"]),
+									(fromString "{http://jabber.org/protocol/muc#admin}jid", [ContentText $ formatJID jid])
+								] []
+						]
+					}
+
 				writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
 					messageTo = Just room,
 					messageFrom = telToJid tel (fromString componentHost),
