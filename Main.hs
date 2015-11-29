@@ -154,6 +154,9 @@ componentMessage db toVitelity (m@Message { messageType = MessageError }) _ _ _ 
 		]
 componentMessage db toVitelity m existingRoom _ _ tel _
 	| Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
+		forM_ (invitePassword invite) $ \password -> do
+			True <- TC.runTCM $ TC.put db (tcKey tel (T.unpack (formatJID $ inviteMUC invite) <> "\0muc_roomsecret")) (T.unpack password)
+			return ()
 		existingInvite <- tcGetJID db tel "invited"
 		nick <- nickFor db (inviteFrom invite) existingRoom
 		let txt = mconcat [
@@ -237,7 +240,7 @@ componentStanza db toVitelity toComponent _ (ReceivedPresence p@(Presence { pres
 		tcPutJID db tel "joined" from
 
 		creating <- tcGetJID db tel "creating"
-		True <- TC.runTCM $ TC.out db $ tcKey tel "creating"
+		void $ TC.runTCM $ TC.out db $ tcKey tel "creating"
 		let code201 = if fmap bareTxt creating == Just bareMUC then
 				-- Hack for servers that don't support reserved rooms
 				-- If we planned to create it, assume we did
@@ -491,12 +494,17 @@ leaveRoom db toComponent componentHost tel reason = do
 		return ()
 
 joinRoom db toComponent componentHost tel room = do
+	password <- TC.runTCM $ TC.get db (tcKey tel (T.unpack (bareTxt room) <> "\0muc_roomsecret"))
+	let pwEl = maybe [] (\pw -> [
+			NodeElement $ Element (fromString "{http://jabber.org/protocol/muc}password") [] [NodeContent $ ContentText $ fromString pw]
+		]) password
+
 	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
 		presenceTo = Just room,
 		presenceFrom = telToJid tel (fromString componentHost),
-		presencePayloads = [Element (fromString "{http://jabber.org/protocol/muc}x") [] [
+		presencePayloads = [Element (fromString "{http://jabber.org/protocol/muc}x") [] ([
 			NodeElement $ Element (fromString "{http://jabber.org/protocol/muc}history") [(fromString "{http://jabber.org/protocol/muc}maxchars", [ContentText $ fromString "0"])] []
-		]]
+		] <> pwEl)]
 	}
 
 createRoom :: TChan StanzaRec -> String -> [String] -> String -> String -> IO Bool
