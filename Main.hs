@@ -206,6 +206,10 @@ componentStanza db toVitelity toComponent componentHost (ReceivedMessage (m@Mess
 		}
 	where
 	resourceFrom = strResource <$> jidResource from
+componentStanza _ toVitelity _ _ (ReceivedPresence p@(Presence { presenceType = PresenceError, presenceFrom = Just from, presenceTo = Just to }))
+	| Just tel <- strNode <$> jidNode to,
+	  [_] <- isNamed (fromString "{http://jabber.org/protocol/muc}x") =<< presencePayloads p =
+		writeStanzaChan toVitelity $ mkSMS tel (fromString "* Failed to join " <> bareTxt from)
 componentStanza db toVitelity toComponent _ (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
 	| Just tel <- strNode <$> jidNode to,
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
