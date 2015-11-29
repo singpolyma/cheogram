@@ -63,6 +63,21 @@ queryDisco toComponent to from = do
 		iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") [] []
 	}
 
+fillFormField var value form = form {
+		elementNodes = map (\node ->
+			case node of
+				NodeElement el
+					| elementName el == fromString "{jabber:x:data}field" &&
+					  (attributeText (fromString "{jabber:x:data}var") el == Just var ||
+					  attributeText (fromString "var") el == Just var) ->
+						NodeElement $ el { elementNodes = [
+							NodeElement $ Element (fromString "{jabber:x:data}value") []
+								[NodeContent $ ContentText $ value]
+						]}
+				x -> x
+		) (elementNodes form)
+	}
+
 data Invite = Invite {
 	inviteMUC :: JID,
 	inviteFrom :: JID,
@@ -220,9 +235,30 @@ componentStanza db toVitelity toComponent _ (ReceivedPresence p@(Presence { pres
 			True <- TC.runTCM $ TC.out db $ tcKey tel "invited"
 			return ()
 		tcPutJID db tel "joined" from
-		writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have joined ", bareMUC, fromString " as ", roomNick])
-		queryDisco toComponent (fromMaybe (error "bareMUC not actually a JID") $ parseJID bareMUC) to
+
+		creating <- tcGetJID db tel "creating"
+		True <- TC.runTCM $ TC.out db $ tcKey tel "creating"
+		let code201 = if fmap bareTxt creating == Just bareMUC then
+				-- Hack for servers that don't support reserved rooms
+				-- If we planned to create it, assume we did
+				[undefined]
+			else
+				code "201" status
+
+		case code201 of
+			(_:_) -> do
+				uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
+				writeStanzaChan toComponent $ (emptyIQ IQGet) {
+					iqTo = Just room,
+					iqFrom = Just to,
+					iqID = uuid,
+					iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#owner}query") [] []
+				}
+			_ -> do
+				writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have joined ", bareMUC, fromString " as ", roomNick])
+				queryDisco toComponent room to
 	where
+	Just room = parseJID bareMUC
 	bareMUC = bareTxt from
 	roomNick = fromMaybe mempty (strResource <$> jidResource from)
 componentStanza db toVitelity _ _ (ReceivedPresence p@(Presence { presenceType = PresenceUnavailable, presenceFrom = Just from, presenceTo = Just to }))
@@ -322,6 +358,7 @@ componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQErro
 			(tel:_) -> do
 				nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
 				let Just room = parseJID $ bareTxt from <> fromString "/" <> nick
+				tcPutJID db tel "creating" room
 				leaveRoom db toComponent componentHost tel "Joined a different room."
 				joinRoom db toComponent componentHost tel room
 			_ -> return () -- Invalid packet, ignore
@@ -332,6 +369,30 @@ componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQResu
 			(tel:name:[]) -> void $ createRoom toComponent componentHost [T.unpack $ strDomain $ jidDomain from] tel (name <> "_" <> tel)
 			(tel:name:servers) -> void $ createRoom toComponent componentHost servers tel name
 			_ -> return () -- Invalid packet, ignore
+componentStanza _ toVitelity _ _ (ReceivedIQ (iq@IQ { iqType = IQError, iqFrom = Just from, iqTo = Just to }))
+	| Just tel <- strNode <$> jidNode to = do
+		print iq
+		writeStanzaChan toVitelity $ mkSMS tel (fromString "Error while querying or configuring " <> formatJID from)
+componentStanza _ toVitelity toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id }))
+	| Just tel <- strNode <$> jidNode to,
+	  (fromString "CHEOGRAMCREATE%") `T.isPrefixOf` id = do
+		writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have created ", bareTxt from])
+		queryDisco toComponent from to
+componentStanza _ _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqPayload = Just p }))
+	| [query] <- isNamed (fromString "{http://jabber.org/protocol/muc#owner}query") p,
+	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query = do
+		uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
+		writeStanzaChan toComponent $ (emptyIQ IQSet) {
+			iqTo = Just from,
+			iqFrom = Just to,
+			iqID = Just $ fromString ("CHEOGRAMCREATE%" <> fromMaybe "UUIDFAIL" uuid),
+			iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#owner}query") [] [
+				NodeElement $
+				fillFormField (fromString "muc#roomconfig_publicroom") (fromString "0") $
+				fillFormField (fromString "muc#roomconfig_membersonly") (fromString "1")
+				form { elementAttributes = [(fromString "{jabber:x:data}type", [ContentText $ fromString "submit"])] }
+			]
+		}
 componentStanza db _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		let vars = mapMaybe (attributeText (fromString "var")) $
