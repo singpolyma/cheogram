@@ -260,6 +260,8 @@ componentStanza db toVitelity toComponent _ (ReceivedPresence p@(Presence { pres
 				}
 			_ -> do
 				writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have joined ", bareMUC, fromString " as ", roomNick])
+				presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
+				writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Group participants: " <> intercalate ", " presence
 				queryDisco toComponent room to
 	where
 	Just room = parseJID bareMUC
