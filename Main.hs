@@ -165,7 +165,7 @@ componentMessage db toVitelity m existingRoom _ _ tel _
 				nick,
 				fromString " has invited you to a group",
 				maybe mempty (\t -> fromString ", saying \"" <> t <> fromString "\"") (inviteText invite),
-				fromString "\nYou can switch to this group by sending /join"
+				fromString "\nYou can switch to this group by replying with /join"
 			]
 		when (existingRoom /= Just (inviteMUC invite) && existingInvite /= Just (inviteMUC invite)) $ do
 			tcPutJID db tel "invited" (inviteMUC invite)
@@ -552,7 +552,7 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			servers <- shuffleM conferenceServers
 			validRoom <- createRoom toComponent componentHost servers (T.unpack tel) (T.unpack name)
 			when (not validRoom) $
-				writeStanzaChan toVitelity $ mkSMS tel (fromString "Invalid room name")
+				writeStanzaChan toVitelity $ mkSMS tel (fromString "Invalid group name")
 		Just (Join room) -> do
 			leaveRoom db toComponent componentHost tel "Joined a different room."
 			joinRoom db toComponent componentHost tel room
@@ -603,7 +603,7 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 							[NodeContent $ ContentText $ mconcat [tel, fromString " has invited you to join ", formatJID room]]
 					]
 				}
-			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a room")
+			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a group")
 		Just (SetNick nick) -> do
 			forM_ existingRoom $ \room -> do
 				let toJoin = parseJID (bareTxt room <> fromString "/" <> nick)
@@ -622,15 +622,18 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 		Just (Send msg)
 			| (fromString "(SMSSERVER) ") `T.isPrefixOf` msg -> return () -- bogus message from vitelity, ignore
 			| Just room <- existingRoom -> sendToRoom toComponent componentHost tel room msg
-			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a room")
-		Just Help -> writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
-				"/create (one-word group name) - create new group\n",
-				"/invite (number or JID) - invite to group\n",
-				"/who - list group participants\n",
-				"/nick (desired name) - set nick\n",
-				"/msg (user) - whisper to group member\n",
-				"/leave - leave group"
-			]
+			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a group")
+		Just Help -> do
+			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
+					"Invite to group: /invite phone-number\n",
+					"Show group participants: /who\n",
+					"Set nick: /nick nickname"
+				]
+			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
+					"Create a group: /create short-name\n",
+					"Whisper to user: /msg username message\n",
+					"Leave group: /leave"
+				]
 		Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You sent an invalid message")
 
 viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
@@ -642,7 +645,7 @@ viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 		forM_ (strNode <$> (jidNode =<< stanzaTo stanza)) $ \tel -> do
 			welcomed <- maybe False toEnum <$> liftIO (TC.runTCM $ TC.get db $ tcKey tel "welcomed")
 			when (not welcomed) $ do
-				putStanza $ mkSMS tel $ fromString "Welcome to CheoGram! You can chat with groups of your friends, right here by SMS. Send /help to learn more."
+				putStanza $ mkSMS tel $ fromString "Welcome to CheoGram! You can chat with groups of friends (one at a time), by replying to this number. Reply with /help to learn more."
 				True <- liftIO (TC.runTCM $ TC.put db (tcKey tel "welcomed") (fromEnum True))
 				liftIO $ threadDelay wait
 
