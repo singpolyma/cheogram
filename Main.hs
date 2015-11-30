@@ -1,30 +1,26 @@
 {-# LANGUAGE PackageImports #-}
-import Control.Error
-import System.Environment
-import Data.Time
+import Prelude (show, read)
+import BasicPrelude hiding (show, read, forM_, getArgs)
 import Data.Char
-import System.Random
-import System.Random.Shuffle (shuffleM)
-import Network
-import Network.Protocol.XMPP
-import Data.List
-import Data.Foldable (forM_)
-import Control.Monad hiding (forM_)
-import Control.Monad.IO.Class
-import Data.String
-import Data.XML.Types
-import Control.Applicative
-import Data.Monoid
-import "monads-tf" Control.Monad.Error (catchError)
 import Control.Concurrent
 import Control.Concurrent.STM
-import Data.Attoparsec.Text
-import Data.Text (Text)
+import Data.Foldable (forM_)
+import System.Environment (getArgs)
+import Control.Error (readZ)
+import Data.Time (addUTCTime, getCurrentTime)
+import Network (PortID(PortNumber))
+import System.Random (Random(randomR), getStdRandom)
+import System.Random.Shuffle (shuffleM)
+
+import "monads-tf" Control.Monad.Error (catchError) -- ick
+import Data.Attoparsec.Text (takeText, string, parseOnly, decimal)
+import Data.XML.Types (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText)
 import qualified Data.Text as T
 import qualified Data.Map as Map
-import qualified Data.UUID as UUID
-import qualified Data.UUID.V1 as UUID
+import qualified Data.UUID as UUID ( toString )
+import qualified Data.UUID.V1 as UUID ( nextUUID )
 import qualified Database.TokyoCabinet as TC
+import Network.Protocol.XMPP -- should import qualified
 
 data StanzaRec = StanzaRec (Maybe JID) (Maybe JID) (Maybe Text) (Maybe Text) [Element] Element deriving (Show)
 mkStanzaRec x = StanzaRec (stanzaTo x) (stanzaFrom x) (stanzaID x) (stanzaLang x) (stanzaPayloads x) (stanzaToElement x)
