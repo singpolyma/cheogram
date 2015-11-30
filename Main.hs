@@ -275,6 +275,22 @@ componentStanza db toVitelity _ _ (ReceivedPresence p@(Presence { presenceType =
 		when (existingRoom == Just from) $ do
 			True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
 			writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareTxt from)
+componentStanza db toVitelity toComponent _ (ReceivedPresence p@(Presence { presenceType = typ, presenceFrom = Just from, presenceTo = Just to }))
+	| Just tel <- strNode <$> jidNode to = do
+		existingRoom <- tcGetJID db tel "joined"
+		when (fmap bareTxt existingRoom == Just (bareTxt from)) $
+			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
+				fromString "* ",
+				resourceFrom,
+				fromString " has ",
+				verb,
+				fromString " the group"
+			]
+	where
+	resourceFrom = fromMaybe mempty (strResource <$> jidResource from)
+	verb
+		| typ == PresenceAvailable = fromString "joined"
+		| otherwise = fromString "left"
 componentStanza db _ toComponent _ (ReceivedPresence p@(Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	writeStanzaChan toComponent $ (emptyPresence PresenceSubscribed) {
 		presenceTo = Just from,
