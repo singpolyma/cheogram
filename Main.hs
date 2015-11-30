@@ -419,13 +419,13 @@ componentStanza _ _ _ _ _ = return ()
 
 storePresence db (ReceivedPresence p@(Presence { presenceType = PresenceUnavailable, presenceFrom = Just from })) = do
 	presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
-	True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ filter (/=resourceFrom) presence))
+	True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ sort $ nub $ filter (/=resourceFrom) presence))
 	return ()
 	where
 	resourceFrom = fromMaybe "" (T.unpack . strResource <$> jidResource from)
 storePresence db (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from })) = do
 	presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
-	True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ resourceFrom:presence))
+	True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ sort $ nub $ resourceFrom:presence))
 	return ()
 	where
 	resourceFrom = fromMaybe "" (T.unpack . strResource <$> jidResource from)
