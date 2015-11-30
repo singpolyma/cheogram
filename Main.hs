@@ -482,7 +482,7 @@ parseJIDrequireNode txt
 	where
 	jid = parseJID txt
 
-data Command = Help | Create Text | Join JID | JoinInvited | Send Text | Who | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
+data Command = Help | Create Text | Join JID | JoinInvited | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentHost
@@ -506,6 +506,7 @@ parseCommand txt room nick componentHost
 	| txt == fromString "/leave" = Just Leave
 	| txt == fromString "/part" = Just Leave
 	| txt == fromString "/who" = Just Who
+	| txt == fromString "/list" = Just List
 	| txt == fromString "/help" = Just Help
 	| otherwise = Just $ Send txt
 
@@ -581,6 +582,9 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			let room = fromMaybe "" (fmap (T.unpack . bareTxt) existingRoom)
 			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (room <> "\0presence"))
 			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Group participants: " <> intercalate ", " presence
+		Just List -> do
+			bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
+			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Groups you can /join\n" <> intercalate "\n" bookmarks
 		Just (InviteCmd jid)
 			| Just room <- existingRoom -> do
 				membersonly <- maybe False toEnum <$> TC.runTCM (TC.get db (T.unpack (bareTxt room) <> "\0muc_membersonly"))
@@ -647,10 +651,12 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
 					"Invite to group: /invite phone-number\n",
 					"Show group participants: /who\n",
-					"Set nick: /nick nickname"
+					"Set nick: /nick nickname\n",
+					"List groups: /list"
 				]
 			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
 					"Create a group: /create short-name\n",
+					"Join existing group: /join group-name\n",
 					"Whisper to user: /msg username message\n",
 					"Leave group: /leave"
 				]
