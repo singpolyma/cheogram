@@ -239,6 +239,8 @@ componentStanza db toVitelity toComponent _ (ReceivedPresence p@(Presence { pres
 			True <- TC.runTCM $ TC.out db $ tcKey tel "invited"
 			return ()
 		tcPutJID db tel "joined" from
+		bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
+		True <- TC.runTCM (TC.put db (tcKey tel "bookmarks") (show $ sort $ nub $ (T.unpack bareMUC):bookmarks))
 
 		creating <- tcGetJID db tel "creating"
 		void $ TC.runTCM $ TC.out db $ tcKey tel "creating"
