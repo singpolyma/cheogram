@@ -444,14 +444,16 @@ storePresence db (ReceivedPresence (Presence { presenceType = PresenceAvailable,
 storePresence _ _ = return ()
 
 component db toVitelity toComponent componentHost = do
-	void $ forkXMPP $ forever $ flip catchError (liftIO . print) $ do
+	thread <- forkXMPP $ forever $ flip catchError (liftIO . print) $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 		putStanza stanza
 
-	forever $ flip catchError (liftIO . print) $ do
+	forever $ do
 		s <- getStanza
 		liftIO $ storePresence db s
 		liftIO $ componentStanza db toVitelity toComponent componentHost s
+
+	liftIO $ killThread thread
 
 telToVitelity tel
 	| not $ all isDigit $ T.unpack tel = Nothing
@@ -544,7 +546,6 @@ createRoom toComponent componentHost (server:otherServers) tel name =
 		Just t -> queryDisco toComponent t jid >> return True
 		Nothing -> return False
 	where
-	-- TODO: to
 	to = parseJID $ fromString $ name <> "@" <> server
 	Just jid = parseJID $ fromString $ "create@" <> componentHost <> "/" <> intercalate "|" (tel:name:otherServers)
 createRoom _ _ [] _ _ = return False
@@ -657,7 +658,7 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 	putStanza $ emptyPresence PresenceAvailable
 
-	void $ forkXMPP $ forever $ flip catchError (liftIO . print) $ do
+	thread <- forkXMPP $ forever $ flip catchError (liftIO . print) $ do
 		wait <- liftIO $ getStdRandom (randomR (400000,1500000))
 		stanza <- liftIO $ atomically $ readTChan toVitelity
 		forM_ (strNode <$> (jidNode =<< stanzaTo stanza)) $ \tel -> do
@@ -670,7 +671,7 @@ viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 		putStanza stanza
 		liftIO $ threadDelay wait
 
-	forever $ flip catchError (liftIO . print) $ do
+	forever $ do
 		m <- getMessage <$> getStanza
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
 			(Just tel, Just txt) ->
@@ -678,6 +679,8 @@ viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 					Left _ -> processSMS db toVitelity toComponent componentHost conferenceServers tel txt
 					Right chunk -> atomically $ writeTChan chunks chunk
 			_ -> return ()
+
+	liftIO $ killThread thread
 
 data Chunk = Chunk Text Int Int Text | TimerExpire
 
@@ -731,9 +734,12 @@ main = do
 	void $ forkIO $ forever $ threadDelay 1500000 >> atomically (writeTChan chunks TimerExpire)
 	void $ forkIO $ multipartStitcher db chunks toVitelity toComponent name conferences
 
-	void $ forkIO $ void $ runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name)
+	void $ forkIO $ void $
+		forever $ flip catchError (liftIO . fmap Right . print) $
+		runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name)
 
 	let Just vitelityParsedJid = parseJID $ fromString vitelityJid
-	runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
-		void $ bindJID vitelityParsedJid
-		viteltiy db chunks toVitelity toComponent name conferences
+	forever $ flip catchError (liftIO . fmap Right . print) $
+		runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
+			void $ bindJID vitelityParsedJid
+			viteltiy db chunks toVitelity toComponent name conferences
