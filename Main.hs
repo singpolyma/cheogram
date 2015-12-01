@@ -662,7 +662,8 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 					"Create a group: /create short-name\n",
 					"Join existing group: /join group-name\n",
 					"Whisper to user: /msg username message\n",
-					"Leave group: /leave"
+					"Leave group: /leave",
+					"More info: http://cheogram.com"
 				]
 		Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You sent an invalid message")
 
@@ -675,7 +676,7 @@ viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 		forM_ (strNode <$> (jidNode =<< stanzaTo stanza)) $ \tel -> do
 			welcomed <- maybe False toEnum <$> liftIO (TC.runTCM $ TC.get db $ tcKey tel "welcomed")
 			unless welcomed $ do
-				putStanza $ mkSMS tel $ fromString "Welcome to CheoGram! You can chat with groups of friends (one at a time), by replying to this number. Reply with /help to learn more"
+				putStanza $ mkSMS tel $ fromString "Welcome to CheoGram! You can chat with groups of friends (one at a time), by replying to this number. Reply with /help to learn more or visit cheogram.com"
 				True <- liftIO (TC.runTCM $ TC.put db (tcKey tel "welcomed") (fromEnum True))
 				liftIO $ threadDelay wait
 
