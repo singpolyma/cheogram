@@ -218,9 +218,11 @@ componentStanza db toVitelity toComponent componentHost (ReceivedMessage (m@Mess
 	where
 	resourceFrom = strResource <$> jidResource from
 componentStanza _ toVitelity _ _ (ReceivedPresence p@(Presence { presenceType = PresenceError, presenceFrom = Just from, presenceTo = Just to }))
-	| Just tel <- strNode <$> jidNode to,
-	  [_] <- isNamed (fromString "{http://jabber.org/protocol/muc}x") =<< presencePayloads p =
-		writeStanzaChan toVitelity $ mkSMS tel (fromString "* Failed to join " <> bareTxt from)
+	| Just tel <- strNode <$> jidNode to = do
+		let errorText = maybe mempty (mconcat . (fromString "\n":) . elementText) $ listToMaybe $
+			isNamed (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text") =<<
+			elementChildren =<< isNamed (fromString "{jabber:component:accept}error") =<< presencePayloads p
+		writeStanzaChan toVitelity $ mkSMS tel (fromString "* Failed to join " <> bareTxt from <> errorText)
 componentStanza db toVitelity toComponent _ (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
 	| Just tel <- strNode <$> jidNode to,
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
