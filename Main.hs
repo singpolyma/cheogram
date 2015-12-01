@@ -553,6 +553,11 @@ createRoom toComponent componentHost (server:otherServers) tel name =
 	Just jid = parseJID $ fromString $ "create@" <> componentHost <> "/" <> intercalate "|" (tel:name:otherServers)
 createRoom _ _ [] _ _ = return False
 
+mucShortMatch tel short muc =
+	node == short || T.stripSuffix (fromString "_" <> tel) node == Just short
+	where
+	node = fromMaybe mempty $ fmap strNode (jidNode =<< parseJID muc)
+
 processSMS db toVitelity toComponent componentHost conferenceServers tel txt = do
 	nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
 	existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
@@ -572,7 +577,10 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 				writeStanzaChan toVitelity $ mkSMS tel (fromString "Invalid group name")
 		Just (Join room) -> do
 			leaveRoom db toComponent componentHost tel "Joined a different room."
-			joinRoom db toComponent componentHost tel room
+			bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
+			joinRoom db toComponent componentHost tel $
+				fromMaybe room $ parseJID =<< (fmap (<> fromString "/" <> nick) $
+				find (mucShortMatch tel (strDomain $ jidDomain room)) bookmarks)
 		Just Leave -> leaveRoom db toComponent componentHost tel "Typed /leave"
 		Just Who -> do
 			let room = maybe "" (T.unpack . bareTxt) existingRoom
