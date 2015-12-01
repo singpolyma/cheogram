@@ -621,7 +621,7 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 							[NodeContent $ ContentText $ mconcat [tel, fromString " has invited you to join ", formatJID room]]
 					]
 				}
-			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a group")
+			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a group. Reply with /help to learn more")
 		Just (SetNick nick) -> do
 			forM_ existingRoom $ \room -> do
 				let toJoin = parseJID (bareTxt room <> fromString "/" <> nick)
@@ -665,7 +665,7 @@ viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 		forM_ (strNode <$> (jidNode =<< stanzaTo stanza)) $ \tel -> do
 			welcomed <- maybe False toEnum <$> liftIO (TC.runTCM $ TC.get db $ tcKey tel "welcomed")
 			unless welcomed $ do
-				putStanza $ mkSMS tel $ fromString "Welcome to CheoGram! You can chat with groups of friends (one at a time), by replying to this number. Reply with /help to learn more."
+				putStanza $ mkSMS tel $ fromString "Welcome to CheoGram! You can chat with groups of friends (one at a time), by replying to this number. Reply with /help to learn more"
 				True <- liftIO (TC.runTCM $ TC.put db (tcKey tel "welcomed") (fromEnum True))
 				liftIO $ threadDelay wait
 
