@@ -275,7 +275,7 @@ componentStanza db toVitelity _ _ (ReceivedPresence (Presence { presenceType = t
 	| Just tel <- strNode <$> jidNode to = do
 		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
 		existingRoom <- tcGetJID db tel "joined"
-		when (fmap bareTxt existingRoom == Just (bareTxt from) && not (resourceFrom `elem` presence)) $
+		when (fmap bareTxt existingRoom == Just (bareTxt from) && predicate presence) $
 			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
 				fromString "* ",
 				resourceFrom,
@@ -285,9 +285,9 @@ componentStanza db toVitelity _ _ (ReceivedPresence (Presence { presenceType = t
 			]
 	where
 	resourceFrom = fromMaybe mempty (strResource <$> jidResource from)
-	verb
-		| typ == PresenceAvailable = fromString "joined"
-		| otherwise = fromString "left"
+	(verb, predicate)
+		| typ == PresenceAvailable = (fromString "joined", not . (resourceFrom `elem`))
+		| otherwise = (fromString "left", (resourceFrom `elem`))
 componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	writeStanzaChan toComponent $ (emptyPresence PresenceSubscribed) {
 		presenceTo = Just from,
