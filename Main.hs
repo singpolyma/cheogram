@@ -656,13 +656,13 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 					"Invite to group: /invite phone-number\n",
 					"Show group participants: /who\n",
 					"Set nick: /nick nickname\n",
-					"List groups: /list"
+					"List groups: /list\n",
+					"Create a group: /create short-name"
 				]
 			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
-					"Create a group: /create short-name\n",
 					"Join existing group: /join group-name\n",
 					"Whisper to user: /msg username message\n",
-					"Leave group: /leave",
+					"Leave group: /leave\n",
 					"More info: http://cheogram.com"
 				]
 		Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You sent an invalid message")
