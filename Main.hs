@@ -451,12 +451,10 @@ component db toVitelity toComponent componentHost = do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 		putStanza stanza
 
-	forever $ do
+	flip catchError (\e -> liftIO (print e >> killThread thread)) $ forever $ do
 		s <- getStanza
 		liftIO $ componentStanza db toVitelity toComponent componentHost s
 		liftIO $ storePresence db s
-
-	liftIO $ killThread thread
 
 telToVitelity tel
 	| not $ all isDigit $ T.unpack tel = Nothing
@@ -683,7 +681,7 @@ viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 		putStanza stanza
 		liftIO $ threadDelay wait
 
-	forever $ do
+	flip catchError (\e -> liftIO (print e >> killThread thread)) $ forever $ do
 		m <- getMessage <$> getStanza
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
 			(Just tel, Just txt) ->
@@ -691,8 +689,6 @@ viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 					Left _ -> processSMS db toVitelity toComponent componentHost conferenceServers tel txt
 					Right chunk -> atomically $ writeTChan chunks chunk
 			_ -> return ()
-
-	liftIO $ killThread thread
 
 data Chunk = Chunk Text Int Int Text | TimerExpire
 
@@ -746,12 +742,9 @@ main = do
 	void $ forkIO $ forever $ threadDelay 1500000 >> atomically (writeTChan chunks TimerExpire)
 	void $ forkIO $ multipartStitcher db chunks toVitelity toComponent name conferences
 
-	void $ forkIO $ void $
-		forever $ flip catchError (liftIO . fmap Right . print) $
-		runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name)
+	void $ forkIO $ forever $ print =<< runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name)
 
 	let Just vitelityParsedJid = parseJID $ fromString vitelityJid
-	forever $ flip catchError (liftIO . fmap Right . print) $
-		runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
-			void $ bindJID vitelityParsedJid
-			viteltiy db chunks toVitelity toComponent name conferences
+	forever $ runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
+		void $ bindJID vitelityParsedJid
+		viteltiy db chunks toVitelity toComponent name conferences
