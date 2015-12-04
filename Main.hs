@@ -569,7 +569,7 @@ createRoom _ _ [] _ _ = return False
 mucShortMatch tel short muc =
 	node == short || T.stripSuffix (fromString "_" <> tel) node == Just short
 	where
-	node = fromMaybe mempty $ fmap strNode (jidNode =<< parseJID muc)
+	node = maybe mempty strNode (jidNode =<< parseJID muc)
 
 processSMS db toVitelity toComponent componentHost conferenceServers tel txt = do
 	nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
@@ -592,8 +592,8 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			leaveRoom db toComponent componentHost tel "Joined a different room."
 			bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
 			joinRoom db toComponent componentHost tel $
-				fromMaybe room $ parseJID =<< (fmap (<> fromString "/" <> nick) $
-				find (mucShortMatch tel (strDomain $ jidDomain room)) bookmarks)
+				fromMaybe room $ parseJID =<< fmap (<> fromString "/" <> nick)
+				(find (mucShortMatch tel (strDomain $ jidDomain room)) bookmarks)
 		Just Leave -> leaveRoom db toComponent componentHost tel "Typed /leave"
 		Just Who -> do
 			let snick = T.unpack nick
