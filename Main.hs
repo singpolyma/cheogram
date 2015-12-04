@@ -592,7 +592,12 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 		Just Who -> do
 			let room = maybe "" (T.unpack . bareTxt) existingRoom
 			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (room <> "\0presence"))
-			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Group participants: " <> intercalate ", " presence
+			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
+					"You are joined to ", room,
+					" as ", T.unpack nick,
+					" along with\n",
+					intercalate ", " presence
+				]
 		Just List -> do
 			bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
 			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Groups you can /join\n" <> intercalate "\n" bookmarks
