@@ -605,13 +605,14 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 				find (mucShortMatch tel (strDomain $ jidDomain room)) bookmarks)
 		Just Leave -> leaveRoom db toComponent componentHost tel "Typed /leave"
 		Just Who -> do
+			let snick = T.unpack nick
 			let room = maybe "" (T.unpack . bareTxt) existingRoom
 			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (room <> "\0presence"))
 			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
 					"You are joined to ", room,
-					" as ", T.unpack nick,
+					" as ", snick,
 					" along with\n",
-					intercalate ", " presence
+					intercalate ", " (filter (/= snick) presence)
 				]
 		Just List -> do
 			bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
