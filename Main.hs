@@ -15,6 +15,7 @@ import System.Random.Shuffle (shuffleM)
 import "monads-tf" Control.Monad.Error (catchError) -- ick
 import Data.Attoparsec.Text (takeText, string, parseOnly, decimal)
 import Data.XML.Types (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText)
+import qualified Data.CaseInsensitive as CI
 import qualified Data.Text as T
 import qualified Data.Map as Map
 import qualified Data.UUID as UUID ( toString )
@@ -476,33 +477,41 @@ parseJIDrequireNode txt
 	where
 	jid = parseJID txt
 
+stripCIPrefix prefix str
+	| CI.mk prefix' == prefix = Just rest
+	| otherwise = Nothing
+	where
+	(prefix', rest) = T.splitAt (T.length $ CI.original prefix) str
+
 data Command = Help | Create Text | Join JID | JoinInvited | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentHost
-	| Just jid <- T.stripPrefix (fromString "/invite ") txt =
+	| Just jid <- stripCIPrefix (fromString "/invite ") txt =
 		InviteCmd <$> (
 			parseJIDrequireNode jid <|>
 			telToJid jid (fromString componentHost)
 		)
-	| Just room <- T.stripPrefix (fromString "/join ") txt =
+	| Just room <- stripCIPrefix (fromString "/join ") txt =
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
-	| Just t <- T.stripPrefix (fromString "/create ") txt = Just $ Create t
-	| Just nick <- T.stripPrefix (fromString "/nick ") txt = Just $ SetNick nick
-	| Just input <- T.stripPrefix (fromString "/msg ") txt =
+	| Just t <- stripCIPrefix (fromString "/create ") txt = Just $ Create t
+	| Just nick <- stripCIPrefix (fromString "/nick ") txt = Just $ SetNick nick
+	| Just input <- stripCIPrefix (fromString "/msg ") txt =
 		let (to, msg) = T.breakOn (fromString " ") input in
 		Whisper <$> (
 			parseJIDrequireNode to <|>
 			telToJid to (fromString componentHost) <|>
 			(parseJID =<< fmap (\r -> bareTxt r <> fromString "/" <> to) room)
 		) <*> pure msg
-	| txt == fromString "/join" = Just JoinInvited
-	| txt == fromString "/leave" = Just Leave
-	| txt == fromString "/part" = Just Leave
-	| txt == fromString "/who" = Just Who
-	| txt == fromString "/list" = Just List
-	| txt == fromString "/help" = Just Help
+	| citxt == fromString "/join" = Just JoinInvited
+	| citxt == fromString "/leave" = Just Leave
+	| citxt == fromString "/part" = Just Leave
+	| citxt == fromString "/who" = Just Who
+	| citxt == fromString "/list" = Just List
+	| citxt == fromString "/help" = Just Help
 	| otherwise = Just $ Send txt
+	where
+	citxt = CI.mk txt
 
 getMessage (ReceivedMessage m) = Just m
 getMessage _ = Nothing
