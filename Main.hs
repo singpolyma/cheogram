@@ -178,6 +178,69 @@ componentMessage db toVitelity (Message { messageFrom = Just from }) existingRoo
 	writeStanzaChan toVitelity $ mkSMS tel txt
 componentMessage _ _ _ _ _ _ _ _ = return ()
 
+handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads join
+	| join,
+	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads,
+	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
+	  (_:_) <- code "110" status = do
+		existingInvite <- tcGetJID db tel "invited"
+		when (existingInvite == parseJID bareMUC) $ do
+			True <- TC.runTCM $ TC.out db $ tcKey tel "invited"
+			return ()
+		tcPutJID db tel "joined" from
+		bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
+		True <- TC.runTCM (TC.put db (tcKey tel "bookmarks") (show $ sort $ nub $ T.unpack bareMUC : bookmarks))
+
+		creating <- tcGetJID db tel "creating"
+		void $ TC.runTCM $ TC.out db $ tcKey tel "creating"
+		let code201 = if fmap bareTxt creating == Just bareMUC then
+				-- Hack for servers that don't support reserved rooms
+				-- If we planned to create it, assume we did
+				[undefined]
+			else
+				code "201" status
+
+		when (null code201) $ do
+			writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have joined ", bareMUC, fromString " as ", resourceFrom])
+			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
+			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Group participants: " <> intercalate ", " presence
+
+		queryDisco toComponent room to
+	| not join,
+	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads,
+	  (_:_) <- code "303" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
+		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
+		mapM_ (\nick -> do
+			True <- TC.runTCM (TC.put db (T.unpack bareMUC <> "\0presence") (show $ sort $ nub $ nick : filter (/=resourceFrom) presence))
+			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
+					fromString "* ",
+					resourceFrom,
+					fromString " has changed their nick to ",
+					nick
+				]
+			return ()
+			) $ attributeText (fromString "nick")
+				=<< listToMaybe (isNamed (fromString "{http://jabber.org/protocol/muc#user}item") =<< elementChildren x)
+	| not join && existingRoom == Just from = do
+		True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
+		writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareMUC)
+	| fmap bareTxt existingRoom == Just bareMUC = do
+		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
+		when (mod $ resourceFrom `elem` presence) $
+			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
+				fromString "* ",
+				resourceFrom,
+				fromString " has ",
+				fromString $ if join then "joined" else "left",
+				fromString " the group"
+			]
+	| otherwise = return ()
+	where
+	resourceFrom = fromMaybe mempty (strResource <$> jidResource from)
+	mod = if join then not else id
+	Just room = parseJID bareMUC
+	bareMUC = bareTxt from
+
 componentStanza _ _ toComponent _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
 	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
@@ -224,86 +287,14 @@ componentStanza _ toVitelity _ _ (ReceivedPresence p@(Presence { presenceType = 
 			isNamed (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text") =<<
 			elementChildren =<< isNamed (fromString "{jabber:component:accept}error") =<< presencePayloads p
 		writeStanzaChan toVitelity $ mkSMS tel (fromString "* Failed to join " <> bareTxt from <> errorText)
-componentStanza db toVitelity toComponent _ (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
-	| Just tel <- strNode <$> jidNode to,
-	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
-	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
-	  (_:_) <- code "110" status = do
-		existingInvite <- tcGetJID db tel "invited"
-		when (existingInvite == parseJID bareMUC) $ do
-			True <- TC.runTCM $ TC.out db $ tcKey tel "invited"
-			return ()
-		tcPutJID db tel "joined" from
-		bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
-		True <- TC.runTCM (TC.put db (tcKey tel "bookmarks") (show $ sort $ nub $ T.unpack bareMUC : bookmarks))
-
-		creating <- tcGetJID db tel "creating"
-		void $ TC.runTCM $ TC.out db $ tcKey tel "creating"
-		let code201 = if fmap bareTxt creating == Just bareMUC then
-				-- Hack for servers that don't support reserved rooms
-				-- If we planned to create it, assume we did
-				[undefined]
-			else
-				code "201" status
-
-		case code201 of
-			(_:_) -> do
-				uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
-				writeStanzaChan toComponent $ (emptyIQ IQGet) {
-					iqTo = Just room,
-					iqFrom = Just to,
-					iqID = uuid,
-					iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#owner}query") [] []
-				}
-			_ -> do
-				writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have joined ", bareMUC, fromString " as ", roomNick])
-				presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
-				writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Group participants: " <> intercalate ", " presence
-				queryDisco toComponent room to
-	where
-	Just room = parseJID bareMUC
-	bareMUC = bareTxt from
-	roomNick = fromMaybe mempty (strResource <$> jidResource from)
-componentStanza db toVitelity _ _ (ReceivedPresence p@(Presence { presenceType = PresenceUnavailable, presenceFrom = Just from, presenceTo = Just to }))
-	| Just tel <- strNode <$> jidNode to,
-	  [] <- code "303" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren
-	        =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p = do
-		existingRoom <- tcGetJID db tel "joined"
-		when (existingRoom == Just from) $ do
-			True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
-			writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareTxt from)
-componentStanza db toVitelity _ _ (ReceivedPresence (p@Presence { presenceType = typ, presenceFrom = Just from, presenceTo = Just to }))
-	| Just tel <- strNode <$> jidNode to,
-	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
-	  (_:_) <- code "303" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
-		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
-		mapM_ (\nick -> do
-			True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ sort $ nub $ nick : filter (/=resourceFrom) presence))
-			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
-					fromString "* ",
-					resourceFrom,
-					fromString " has changed their nick to ",
-					nick
-				]
-			return ()
-			) $ attributeText (fromString "nick")
-				=<< listToMaybe (isNamed (fromString "{http://jabber.org/protocol/muc#user}item") =<< elementChildren x)
-	| Just tel <- strNode <$> jidNode to = do
-		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
-		existingRoom <- tcGetJID db tel "joined"
-		when (fmap bareTxt existingRoom == Just (bareTxt from) && predicate presence) $
-			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
-				fromString "* ",
-				resourceFrom,
-				fromString " has ",
-				verb,
-				fromString " the group"
-			]
-	where
-	resourceFrom = fromMaybe mempty (strResource <$> jidResource from)
-	(verb, predicate)
-		| typ == PresenceAvailable = (fromString "joined", not . (resourceFrom `elem`))
-		| otherwise = (fromString "left", (resourceFrom `elem`))
+componentStanza db toVitelity toComponent _ (ReceivedPresence (Presence {
+		presenceType = typ,
+		presenceFrom = Just from,
+		presenceTo = Just to@(JID { jidNode = Just toNode }),
+		presencePayloads = payloads
+	})) | typ `elem` [PresenceAvailable, PresenceUnavailable] = do
+		existingRoom <- tcGetJID db (strNode toNode) "joined"
+		handleJoinPartRoom db toVitelity toComponent existingRoom from to (strNode toNode) payloads (typ == PresenceAvailable)
 componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	writeStanzaChan toComponent $ (emptyPresence PresenceSubscribed) {
 		presenceTo = Just from,
