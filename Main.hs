@@ -1,10 +1,10 @@
 {-# LANGUAGE PackageImports #-}
 import Prelude (show, read)
-import BasicPrelude hiding (show, read, forM_, getArgs)
+import BasicPrelude hiding (show, read, forM_, mapM_, getArgs)
 import Data.Char
 import Control.Concurrent
 import Control.Concurrent.STM
-import Data.Foldable (forM_)
+import Data.Foldable (forM_, mapM_)
 import System.Environment (getArgs)
 import Control.Error (readZ)
 import Data.Time (addUTCTime, getCurrentTime)
@@ -272,7 +272,22 @@ componentStanza db toVitelity _ _ (ReceivedPresence p@(Presence { presenceType =
 		when (existingRoom == Just from) $ do
 			True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
 			writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareTxt from)
-componentStanza db toVitelity _ _ (ReceivedPresence (Presence { presenceType = typ, presenceFrom = Just from, presenceTo = Just to }))
+componentStanza db toVitelity _ _ (ReceivedPresence (p@Presence { presenceType = typ, presenceFrom = Just from, presenceTo = Just to }))
+	| Just tel <- strNode <$> jidNode to,
+	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< presencePayloads p,
+	  (_:_) <- code "303" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
+		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
+		mapM_ (\nick -> do
+			True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ sort $ nub $ nick : filter (/=resourceFrom) presence))
+			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
+					fromString "* ",
+					resourceFrom,
+					fromString " has changed their nick to ",
+					nick
+				]
+			return ()
+			) $ attributeText (fromString "nick")
+				=<< listToMaybe (isNamed (fromString "{http://jabber.org/protocol/muc#user}item") =<< elementChildren x)
 	| Just tel <- strNode <$> jidNode to = do
 		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
 		existingRoom <- tcGetJID db tel "joined"
