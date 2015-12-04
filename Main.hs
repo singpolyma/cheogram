@@ -200,10 +200,14 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 			else
 				code "201" status
 
-		when (null code201) $ do
-			writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have joined ", bareMUC, fromString " as ", resourceFrom])
-			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
-			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Group participants: " <> intercalate ", " presence
+		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
+		when (null code201 && not (resourceFrom `elem` presence)) $
+			writeStanzaChan toVitelity $ mkSMS tel (mconcat [
+				fromString "* You have joined ", bareMUC,
+				fromString " as ", resourceFrom,
+				fromString " along with\n",
+				intercalate ", " (filter (/= resourceFrom) presence)
+			])
 
 		queryDisco toComponent room to
 	| not join,
