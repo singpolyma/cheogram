@@ -206,7 +206,7 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 				fromString "* You have joined ", bareMUC,
 				fromString " as ", resourceFrom,
 				fromString " along with\n",
-				intercalate ", " (filter (/= resourceFrom) presence)
+				intercalate (fromString ", ") (filter (/= resourceFrom) presence)
 			])
 
 		queryDisco toComponent room to
