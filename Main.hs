@@ -339,6 +339,9 @@ componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Jus
 			iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") []
 				[
 					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "http://jabber.org/protocol/muc"])
+					] [],
+					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
 						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:x:conference"])
 					] []
 				]
