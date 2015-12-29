@@ -440,11 +440,6 @@ componentStanza _ toVitelity _ _ (ReceivedIQ (iq@IQ { iqType = IQError, iqFrom =
 	| Just tel <- strNode <$> jidNode to = do
 		print iq
 		writeStanzaChan toVitelity $ mkSMS tel (fromString "Error while querying or configuring " <> formatJID from)
-componentStanza _ toVitelity toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id }))
-	| Just tel <- strNode <$> jidNode to,
-	  fromString "CHEOGRAMCREATE%" `T.isPrefixOf` id = do
-		writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have created ", bareTxt from])
-		queryDisco toComponent from to
 componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/muc#owner}query") p,
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query = do
@@ -461,6 +456,11 @@ componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = 
 				form { elementAttributes = [(fromString "{jabber:x:data}type", [ContentText $ fromString "submit"])] }
 			]
 		}
+componentStanza _ toVitelity toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id }))
+	| Just tel <- strNode <$> jidNode to,
+	  fromString "CHEOGRAMCREATE%" `T.isPrefixOf` id = do
+		writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have created ", bareTxt from])
+		queryDisco toComponent from to
 componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to, iqFrom = Just from, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		let vars = mapMaybe (attributeText (fromString "var")) $
