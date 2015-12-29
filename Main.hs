@@ -325,6 +325,7 @@ handleVerificationCode db toComponent password iq = do
 				forM_ (mapMaybe parseJID bookmarks) $ \bookmark ->
 					sendInvite db toComponent from (Invite bookmark (fromMaybe to $ telToJid tel (formatJID to)) (Just $ fromString "Cheogram registration") Nothing)
 
+				True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0registered") (T.unpack tel)
 				tcPutJID db tel "registered" from
 			_ ->
 				writeStanzaChan toComponent $ iq {
@@ -397,6 +398,17 @@ handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
 handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet, iqPayload = Just payload }) query
 	| [passwordEl] <- isNamed (fromString "{jabber:iq:register}password") query =
 		handleVerificationCode db toComponent (mconcat $ elementText passwordEl) iq
+handleRegister db _ toComponent iq@(IQ { iqType = IQSet }) query
+	| [_] <- isNamed (fromString "{jabber:iq:register}remove") =<< elementChildren query = do
+		tel <- maybe mempty T.pack <$> TC.runTCM (TC.get db $ T.unpack (maybe mempty bareTxt $ iqFrom iq) <> "\0registered")
+		_ <- TC.runTCM $ TC.out db $ tcKey tel "registered"
+		_ <- TC.runTCM $ TC.out db $ T.unpack (maybe mempty bareTxt $ iqFrom iq) <> "\0registered"
+		writeStanzaChan toComponent $ iq {
+			iqTo = iqFrom iq,
+			iqFrom = iqTo iq,
+			iqType = IQResult,
+			iqPayload = Just $ Element (fromString "{jabber:iq:register}query") [] []
+		}
 handleRegister _ _ toComponent iq@(IQ { iqType = typ }) _
 	| typ `elem` [IQGet, IQSet] =
 		writeStanzaChan toComponent $ iq {
