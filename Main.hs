@@ -7,7 +7,7 @@ import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import System.Environment (getArgs)
 import Control.Error (readZ)
-import Data.Time (addUTCTime, getCurrentTime)
+import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
 import System.Random (Random(randomR), getStdRandom)
 import System.Random.Shuffle (shuffleM)
@@ -72,6 +72,18 @@ fillFormField var value form = form {
 		) (elementNodes form)
 	}
 
+getFormField form var =
+		listToMaybe $ mapMaybe (\node ->
+			case node of
+				NodeElement el
+					| elementName el == fromString "{jabber:x:data}field" &&
+					  (attributeText (fromString "{jabber:x:data}var") el == Just var ||
+					  attributeText (fromString "var") el == Just var) ->
+						Just $ mconcat $
+						elementText =<< isNamed (fromString "{jabber:x:data}value") =<< elementChildren el
+				_ -> Nothing
+		) (elementNodes form)
+
 data Invite = Invite {
 	inviteMUC :: JID,
 	inviteFrom :: JID,
@@ -134,7 +146,8 @@ code str status =
 	<>
 	hasAttributeText (fromString "code") (== fromString str) status
 
-componentMessage _ toVitelity (m@Message { messageType = MessageError }) _ _ _ tel body = do
+componentMessage _ toVitelity _ (m@Message { messageType = MessageError }) _ _ _ tel body = do
+	print m
 	let errorTxt = fmap (mconcat . elementText) $ listToMaybe $
 		isNamed (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text") =<<
 		elementChildren =<< isNamed (fromString "{jabber:component:accept}error") =<< messagePayloads m
@@ -146,7 +159,7 @@ componentMessage _ toVitelity (m@Message { messageType = MessageError }) _ _ _ t
 			maybe mempty (fromString "\n"<>) errorTxt,
 			maybe mempty (fromString "\n"<>) body
 		]
-componentMessage db toVitelity m existingRoom _ _ tel _
+componentMessage db toVitelity toComponent m@(Message { messageTo = Just to }) existingRoom _ _ tel _
 	| Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
 		forM_ (invitePassword invite) $ \password -> do
 			True <- TC.runTCM $ TC.put db (tcKey tel (T.unpack (formatJID $ inviteMUC invite) <> "\0muc_roomsecret")) (T.unpack password)
@@ -163,7 +176,9 @@ componentMessage db toVitelity m existingRoom _ _ tel _
 		when (existingRoom /= Just (inviteMUC invite) && existingInvite /= Just (inviteMUC invite)) $ do
 			tcPutJID db tel "invited" (inviteMUC invite)
 			writeStanzaChan toVitelity $ mkSMS tel txt
-componentMessage _ toVitelity (m@Message { messageType = MessageGroupChat }) existingRoom bareFrom resourceFrom tel (Just body) =
+			regJid <- tcGetJID db tel "registered"
+			forM_ regJid $ \jid -> sendInvite db toComponent jid (invite { inviteFrom = to })
+componentMessage _ toVitelity _ (m@Message { messageType = MessageGroupChat }) existingRoom bareFrom resourceFrom tel (Just body) =
 	if fmap bareTxt existingRoom == Just bareFrom && (
 	   existingRoom /= parseJID (bareFrom <> fromString "/" <> fromMaybe mempty resourceFrom) ||
 	   not (fromString "CHEOGRAM%" `T.isPrefixOf` fromMaybe mempty (messageID m))) then
@@ -172,11 +187,11 @@ componentMessage _ toVitelity (m@Message { messageType = MessageGroupChat }) exi
 		return () -- TODO: Error?
 	where
 	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") resourceFrom, fromString ") ", body]
-componentMessage db toVitelity (Message { messageFrom = Just from }) existingRoom _ _ tel (Just body) = do
+componentMessage db toVitelity _ (Message { messageFrom = Just from }) existingRoom _ _ tel (Just body) = do
 	nick <- nickFor db from existingRoom
 	let txt = mconcat [fromString "(", nick, fromString " whispers) ", body]
 	writeStanzaChan toVitelity $ mkSMS tel txt
-componentMessage _ _ _ _ _ _ _ _ = return ()
+componentMessage _ _ _ _ _ _ _ _ _ = return ()
 
 handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads join
 	| join,
@@ -251,6 +266,162 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 	bareMUC = bareTxt from
 	f = fst :: (Text, Maybe Text) -> Text
 
+verificationResponse =
+	Element (fromString "{jabber:iq:register}query") []
+		[
+			NodeElement $ Element (fromString "{jabber:iq:register}instructions") [] [
+				NodeContent $ ContentText $ fromString "Enter the verification code CheoGram texted you."
+			],
+			NodeElement $ Element (fromString "{jabber:iq:register}password") [] [],
+			NodeElement $ Element (fromString "{jabber:x:data}x") [
+				(fromString "{jabber:x:data}type", [ContentText $ fromString "form"])
+			] [
+				NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ fromString "Verify Phone Number"],
+				NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
+					NodeContent $ ContentText $ fromString "Enter the verification code CheoGram texted you."
+				],
+				NodeElement $ Element (fromString "{jabber:x:data}field") [
+					(fromString "{jabber:x:data}type", [ContentText $ fromString "hidden"]),
+					(fromString "{jabber:x:data}var", [ContentText $ fromString "FORM_TYPE"])
+				] [
+					NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ fromString "jabber:iq:register"]
+				],
+				NodeElement $ Element (fromString "{jabber:x:data}field") [
+					(fromString "{jabber:x:data}type", [ContentText $ fromString "text-single"]),
+					(fromString "{jabber:x:data}var", [ContentText $ fromString "password"]),
+					(fromString "{jabber:x:data}label", [ContentText $ fromString "Verification code"])
+				] []
+			]
+		]
+
+data RegistrationCode = RegistrationCode { regCode :: Int,  tel :: Text, expires :: UTCTime } deriving (Show, Read)
+
+sendRegisterVerification db toVitelity toComponent tel iq = do
+	code <- getStdRandom (randomR (123457::Int,987653))
+	time <- getCurrentTime
+	True <- TC.runTCM $ TC.put db ((maybe mempty T.unpack $ bareTxt <$> iqFrom iq) <> "\0registration_code") $ show $ RegistrationCode code tel time
+	writeStanzaChan toVitelity $ mkSMS tel $ fromString ("Enter this verification code to complete registration: " <> show code)
+	writeStanzaChan toComponent $ iq {
+			iqTo = iqFrom iq,
+			iqFrom = iqTo iq,
+			iqType = IQResult,
+			iqPayload = Just verificationResponse
+		}
+
+handleVerificationCode db toComponent password iq = do
+	time <- getCurrentTime
+	codeAndTime <- fmap (readZ =<<) $ TC.runTCM $ TC.get db regKey
+	if (fmap expires codeAndTime > Just ((-300) `addUTCTime` time)) then
+		forM_ codeAndTime $ \RegistrationCode { regCode = code, tel = tel } ->
+		case (show code == T.unpack password, iqTo iq, iqFrom iq) of
+			(True, Just to, Just from) -> do
+				writeStanzaChan toComponent $ iq {
+					iqTo = iqFrom iq,
+					iqFrom = iqTo iq,
+					iqType = IQResult,
+					iqPayload = Just $ Element (fromString "{jabber:iq:register}query") [] []
+				}
+
+				bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
+				forM_ (mapMaybe parseJID bookmarks) $ \bookmark ->
+					sendInvite db toComponent from (Invite bookmark (fromMaybe to $ telToJid tel (formatJID to)) (Just $ fromString "Cheogram registration") Nothing)
+
+				True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0registered") (T.unpack tel)
+				tcPutJID db tel "registered" from
+			_ ->
+				writeStanzaChan toComponent $ iq {
+					iqTo = iqFrom iq,
+					iqFrom = iqTo iq,
+					iqType = IQError,
+					iqPayload = Just $ Element (fromString "{jabber:component:accept}error")
+						[(fromString "{jabber:component:accept}type", [ContentText $ fromString "auth"])]
+						[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}not-authorized") [] []]
+				}
+	else
+		void $ TC.runTCM $ TC.out db regKey
+	where
+	regKey = (maybe mempty T.unpack $ bareTxt <$> iqFrom iq) <> "\0registration_code"
+
+handleRegister db _ toComponent iq@(IQ { iqType = IQGet }) _ = do
+	time <- getCurrentTime
+	codeAndTime <- fmap (readZ =<<) $ TC.runTCM $ TC.get db ((maybe mempty T.unpack $ bareTxt <$> iqFrom iq) <> "\0registration_code")
+	if fmap expires codeAndTime > Just ((-300) `addUTCTime` time) then
+		writeStanzaChan toComponent $ iq {
+			iqTo = iqFrom iq,
+			iqFrom = iqTo iq,
+			iqType = IQResult,
+			iqPayload = Just verificationResponse
+		}
+	else
+		writeStanzaChan toComponent $ iq {
+			iqTo = iqFrom iq,
+			iqFrom = iqTo iq,
+			iqType = IQResult,
+			iqPayload = Just $ Element (fromString "{jabber:iq:register}query") []
+				[
+					NodeElement $ Element (fromString "{jabber:iq:register}instructions") [] [
+						NodeContent $ ContentText $ fromString "CheoGram can verify your phone number and add you to the private groups you previously texted."
+					],
+					NodeElement $ Element (fromString "{jabber:iq:register}phone") [] [],
+					NodeElement $ Element (fromString "{jabber:x:data}x") [
+						(fromString "{jabber:x:data}type", [ContentText $ fromString "form"])
+					] [
+						NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ fromString "Associate Phone Number"],
+						NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
+							NodeContent $ ContentText $ fromString "CheoGram can verify your phone number and add you to the private groups you previously texted."
+						],
+						NodeElement $ Element (fromString "{jabber:x:data}field") [
+							(fromString "{jabber:x:data}type", [ContentText $ fromString "hidden"]),
+							(fromString "{jabber:x:data}var", [ContentText $ fromString "FORM_TYPE"])
+						] [
+							NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ fromString "jabber:iq:register"]
+						],
+						NodeElement $ Element (fromString "{jabber:x:data}field") [
+							(fromString "{jabber:x:data}type", [ContentText $ fromString "text-single"]),
+							(fromString "{jabber:x:data}var", [ContentText $ fromString "phone"]),
+							(fromString "{jabber:x:data}label", [ContentText $ fromString "Phone number"])
+						] []
+					]
+				]
+		}
+handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
+	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query,
+	  Just tel <- (normalizeTel . T.filter isDigit) =<< getFormField form (fromString "phone") =
+		sendRegisterVerification db toVitelity toComponent tel iq
+handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
+	| [phoneEl] <- isNamed (fromString "{jabber:iq:register}phone") query,
+	  Just tel <- normalizeTel $ T.filter (not . isDigit) $ mconcat (elementText phoneEl) =
+		sendRegisterVerification db toVitelity toComponent tel iq
+handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
+	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query,
+	  Just password <- getFormField form (fromString "password") =
+		handleVerificationCode db toComponent password iq
+handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet, iqPayload = Just payload }) query
+	| [passwordEl] <- isNamed (fromString "{jabber:iq:register}password") query =
+		handleVerificationCode db toComponent (mconcat $ elementText passwordEl) iq
+handleRegister db _ toComponent iq@(IQ { iqType = IQSet }) query
+	| [_] <- isNamed (fromString "{jabber:iq:register}remove") =<< elementChildren query = do
+		tel <- maybe mempty T.pack <$> TC.runTCM (TC.get db $ T.unpack (maybe mempty bareTxt $ iqFrom iq) <> "\0registered")
+		_ <- TC.runTCM $ TC.out db $ tcKey tel "registered"
+		_ <- TC.runTCM $ TC.out db $ T.unpack (maybe mempty bareTxt $ iqFrom iq) <> "\0registered"
+		writeStanzaChan toComponent $ iq {
+			iqTo = iqFrom iq,
+			iqFrom = iqTo iq,
+			iqType = IQResult,
+			iqPayload = Just $ Element (fromString "{jabber:iq:register}query") [] []
+		}
+handleRegister _ _ toComponent iq@(IQ { iqType = typ }) _
+	| typ `elem` [IQGet, IQSet] =
+		writeStanzaChan toComponent $ iq {
+			iqTo = iqFrom iq,
+			iqFrom = iqTo iq,
+			iqType = IQError,
+			iqPayload = Just $ Element (fromString "{jabber:component:accept}error")
+				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
+				[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
+		}
+handleRegister _ _ _ _ _ = return ()
+
 componentStanza _ _ toComponent _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
 	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
@@ -260,7 +431,7 @@ componentStanza db toVitelity toComponent componentHost (ReceivedMessage (m@Mess
 	| Just tel <- strNode <$> jidNode to,
 	  T.length tel == 11 && fromString "1" `T.isPrefixOf` tel = do
 		existingRoom <- tcGetJID db tel "joined"
-		componentMessage db toVitelity m existingRoom (bareTxt from) resourceFrom tel $
+		componentMessage db toVitelity toComponent m existingRoom (bareTxt from) resourceFrom tel $
 			getBody "jabber:component:accept" m
 	| Just jid <- (`telToJid` fromString componentHost) =<< strNode <$> jidNode to =
 		writeStanzaChan toComponent $ m {
@@ -319,6 +490,10 @@ componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = P
 		presenceTo = Just from,
 		presenceFrom = Just to
 	}
+componentStanza db toVitelity toComponent _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
+	| iqType iq `elem` [IQGet, IQSet],
+	  [query] <- isNamed (fromString "{jabber:iq:register}query") p =
+		handleRegister db toVitelity toComponent iq query
 componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p =
@@ -332,6 +507,9 @@ componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Jus
 						(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
 						(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "sms"]),
 						(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram SMS Gateway"])
+					] [],
+					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:register"])
 					] []
 				]
 		}
@@ -460,13 +638,18 @@ componentStanza _ toVitelity toComponent _ (ReceivedIQ (IQ { iqType = IQResult, 
 	| Just tel <- strNode <$> jidNode to,
 	  fromString "CHEOGRAMCREATE%" `T.isPrefixOf` id = do
 		writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have created ", bareTxt from])
-		queryDisco toComponent from to
+		forM_ (parseJID $ bareTxt to <> fromString "/create") $
+			queryDisco toComponent from
 componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to, iqFrom = Just from, iqPayload = Just p }))
-	| [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
+	| Just tel <- strNode <$> jidNode to,
+	  [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		let vars = mapMaybe (attributeText (fromString "var")) $
 			isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query
 		let muc_membersonly = fromEnum $ fromString "muc_membersonly" `elem` vars
 		True <- TC.runTCM $ TC.put db (T.unpack (formatJID from) <> "\0muc_membersonly") muc_membersonly
+		when (fmap strResource (jidResource to) == Just (fromString "create")) $ do
+			regJid <- tcGetJID db tel "registered"
+			forM_ regJid $ \jid -> forM_ (parseJID $ bareTxt to) $ \to -> sendInvite db toComponent jid (Invite from to Nothing Nothing)
 		joinStartupTels db toComponent componentHost from to
 componentStanza _ _ toComponent _ (ReceivedIQ (iq@IQ { iqType = typ }))
 	| typ `elem` [IQGet, IQSet] =
@@ -643,6 +826,36 @@ mucShortMatch tel short muc =
 	where
 	node = maybe mempty strNode (jidNode =<< parseJID muc)
 
+sendInvite db toComponent to (Invite { inviteMUC = room, inviteFrom = from }) = do
+	membersonly <- maybe False toEnum <$> TC.runTCM (TC.get db (T.unpack (bareTxt room) <> "\0muc_membersonly"))
+	when membersonly $
+		-- Try to add everyone we invite as an owner also
+		addMUCOwner toComponent room from to
+
+	writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
+		messageTo = Just room,
+		messageFrom = Just from,
+		messagePayloads = [
+			Element (fromString "{http://jabber.org/protocol/muc#user}x") [] [
+				NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#user}invite") [
+					(fromString "{http://jabber.org/protocol/muc#user}to", [ContentText $ formatJID to])
+				] []
+			]
+		]
+	}
+
+	writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
+		messageTo = Just to,
+		messageFrom = Just from,
+		messagePayloads = [
+			Element (fromString "{jabber:x:conference}x") [
+				(fromString "{jabber:x:conference}jid", [ContentText $ formatJID room])
+			] [],
+			Element (fromString "{jabber:component:accept}body") []
+				[NodeContent $ ContentText $ mconcat [formatJID from, fromString " has invited you to join ", formatJID room]]
+		]
+	}
+
 processSMS db toVitelity toComponent componentHost conferenceServers tel txt = do
 	nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
 	existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
@@ -682,35 +895,8 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
 			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ "Groups you can /join\n" <> intercalate "\n" bookmarks
 		Just (InviteCmd jid)
-			| Just room <- existingRoom -> do
-				membersonly <- maybe False toEnum <$> TC.runTCM (TC.get db (T.unpack (bareTxt room) <> "\0muc_membersonly"))
-				when membersonly $ forM_ (telToJid tel (fromString componentHost)) $ \from ->
-					-- Try to add everyone we invite as an owner also
-					addMUCOwner toComponent room from jid
-
-				writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
-					messageTo = Just room,
-					messageFrom = telToJid tel (fromString componentHost),
-					messagePayloads = [
-						Element (fromString "{http://jabber.org/protocol/muc#user}x") [] [
-							NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#user}invite") [
-								(fromString "{http://jabber.org/protocol/muc#user}to", [ContentText $ formatJID jid])
-							] []
-						]
-					]
-				}
-
-				writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
-					messageTo = Just jid,
-					messageFrom = telToJid tel (fromString componentHost),
-					messagePayloads = [
-						Element (fromString "{jabber:x:conference}x") [
-							(fromString "{jabber:x:conference}jid", [ContentText $ formatJID room])
-						] [],
-						Element (fromString "{jabber:component:accept}body") []
-							[NodeContent $ ContentText $ mconcat [tel, fromString " has invited you to join ", formatJID room]]
-					]
-				}
+			| Just room <- existingRoom, Just from <- telToJid tel (fromString componentHost) ->
+				sendInvite db toComponent jid (Invite room from Nothing Nothing)
 			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a group. Reply with /help to learn more")
 		Just (SetNick nick) -> do
 			forM_ existingRoom $ \room -> do
@@ -808,7 +994,7 @@ multipartStitcher db chunks toVitelity toComponent componentHost conferenceServe
 
 		go unexpired
 
-openTokyoCabinet :: (TC.TCDB a) => FilePath -> IO a
+openTokyoCabinet :: (TC.TCDB a) => String -> IO a
 openTokyoCabinet pth = TC.runTCM $ do
 	db <- TC.new
 	True <- TC.open db pth [TC.OREADER, TC.OWRITER, TC.OCREAT]
