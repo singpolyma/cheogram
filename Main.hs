@@ -218,7 +218,7 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 	  (_:_) <- code "303" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
 		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack bareMUC))
 		mapM_ (\nick -> do
-			True <- TC.runTCM (TC.put db ("presence\0" <> T.unpack bareMUC) (show $ sort $ nub $ (nick, Just $ formatJID from) : filter ((/=resourceFrom).fst) presence))
+			True <- TC.runTCM (TC.put db ("presence\0" <> T.unpack bareMUC) (show $ sort $ nub $ (nick, Just $ bareTxt from) : filter ((/=resourceFrom).fst) presence))
 			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
 					fromString "* ",
 					resourceFrom,
@@ -456,7 +456,7 @@ componentStanza _ _ toComponent _ (ReceivedIQ (iq@IQ { iqType = typ }))
 componentStanza _ _ _ _ _ = return ()
 
 participantJid (Presence { presencePayloads = payloads }) =
-	listToMaybe $ mapMaybe (attributeText (fromString "jid")) $
+	listToMaybe $ mapMaybe (parseJID <=< attributeText (fromString "jid")) $
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}item") =<<
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
@@ -471,7 +471,7 @@ storePresence db (ReceivedPresence (Presence { presenceType = PresenceUnavailabl
 storePresence db (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from })) = do
 	print ("going to store", resourceFrom, participantJid p)
 	presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack (bareTxt from)))
-	True <- TC.runTCM (TC.put db ("presence\0" <> T.unpack (bareTxt from)) (show $ sort $ nub $ (resourceFrom, participantJid p):presence))
+	True <- TC.runTCM (TC.put db ("presence\0" <> T.unpack (bareTxt from)) (show $ sort $ nub $ (resourceFrom, bareTxt <$> participantJid p):presence))
 	return ()
 	where
 	resourceFrom = fromMaybe "" (T.unpack . strResource <$> jidResource from)
