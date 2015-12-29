@@ -4,7 +4,7 @@ import BasicPrelude hiding (show, read, forM_, mapM_, getArgs)
 import Data.Char
 import Control.Concurrent
 import Control.Concurrent.STM
-import Data.Foldable (forM_, mapM_)
+import Data.Foldable (forM_, mapM_, toList)
 import System.Environment (getArgs)
 import Control.Error (readZ)
 import Data.Time (addUTCTime, getCurrentTime)
@@ -191,31 +191,36 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 		bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
 		True <- TC.runTCM (TC.put db (tcKey tel "bookmarks") (show $ sort $ nub $ T.unpack bareMUC : bookmarks))
 
-		creating <- tcGetJID db tel "creating"
-		void $ TC.runTCM $ TC.out db $ tcKey tel "creating"
-		let code201 = if fmap bareTxt creating == Just bareMUC then
-				-- Hack for servers that don't support reserved rooms
-				-- If we planned to create it, assume we did
-				[undefined]
-			else
-				code "201" status
-
-		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
-		when (null code201 && not (resourceFrom `elem` presence)) $
-			writeStanzaChan toVitelity $ mkSMS tel (mconcat [
-				fromString "* You have joined ", bareMUC,
-				fromString " as ", resourceFrom,
-				fromString " along with\n",
-				intercalate (fromString ", ") (filter (/= resourceFrom) presence)
-			])
-
-		queryDisco toComponent room to
+		startup <- fmap (maybe False (const True :: String -> Bool)) $ TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0startup_tels")
+		falsePresence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0false_presence"))
+		True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0false_presence") (show $ sort $ nubBy (equating fst) $ filter ((/=resourceFrom).fst) falsePresence) -- Presence is no longer false
+		presence <- fmap (map f . fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack bareMUC))
+		case presence of
+			[] -> do -- No one in the room, so we "created"
+				uuid <- fromMaybe "UUIDFAIL" <$> (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
+				let fullid = if (resourceFrom `elem` map fst falsePresence) then uuid else "CHEOGRAMCREATE%" <> uuid
+				writeStanzaChan toComponent $ (emptyIQ IQGet) {
+					iqTo = Just room,
+					iqFrom = Just to,
+					iqID = Just $ fromString fullid,
+					iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#owner}query") [] []
+				}
+			(_:_) | not (resourceFrom `elem` (presence <> map (fst :: (Text, Text) -> Text) falsePresence)) -> do
+				writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
+						fromString "* You have joined ", bareMUC,
+						fromString " as ", resourceFrom,
+						fromString " along with\n",
+						intercalate (fromString ", ") (filter (/= resourceFrom) presence)
+					]
+				queryDisco toComponent room to
+			_ ->
+				queryDisco toComponent room to
 	| not join,
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads,
 	  (_:_) <- code "303" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
-		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
+		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack bareMUC))
 		mapM_ (\nick -> do
-			True <- TC.runTCM (TC.put db (T.unpack bareMUC <> "\0presence") (show $ sort $ nub $ nick : filter (/=resourceFrom) presence))
+			True <- TC.runTCM (TC.put db ("presence\0" <> T.unpack bareMUC) (show $ sort $ nubBy (equating fst) $ (nick, Just $ bareTxt from) : filter ((/=resourceFrom).fst) presence))
 			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
 					fromString "* ",
 					resourceFrom,
@@ -229,7 +234,7 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 		True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
 		writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareMUC)
 	| fmap bareTxt existingRoom == Just bareMUC = do
-		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack bareMUC <> "\0presence"))
+		presence <- fmap (map f . fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack bareMUC))
 		when (mod $ resourceFrom `elem` presence) $
 			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
 				fromString "* ",
@@ -244,6 +249,7 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 	mod = if join then not else id
 	Just room = parseJID bareMUC
 	bareMUC = bareTxt from
+	f = fst :: (Text, Maybe Text) -> Text
 
 componentStanza _ _ toComponent _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
@@ -384,6 +390,35 @@ componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Jus
 					NodeElement $ Element (fromString "{jabber:iq:gateway}prompt") [ ] [NodeContent $ ContentText $ fromString "Phone Number"]
 				]
 		}
+componentStanza db _ toComponent componentHost (ReceivedIQ (iq@IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id }))
+	| fromString "CHEOGRAMSTARTUP%" `T.isPrefixOf` id = do
+		-- Room exists and has people in it
+		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack (bareTxt from)))
+		True <- TC.runTCM $ TC.put db ("presence\0" <> T.unpack (bareTxt from)) (show $ sort $ nubBy (equating fst) items)
+		let falsePresence = mapMaybe (\(nick, jid) -> ((,)nick) <$> (T.stripSuffix (fromString $ "@" <> componentHost) =<< jid)) (presence \\ items)
+		True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0false_presence") (show $ sort falsePresence)
+		mapM_ (\(nick,tel) -> forM_ (room nick) (joinRoom db toComponent componentHost tel)) falsePresence
+	where
+	room nick = parseJID $ bareTxt from <> fromString "/" <> nick
+	items = map (\el -> (fromMaybe mempty $ attributeText (fromString "name") el, bareTxt <$> (parseJID =<< attributeText (fromString "jid") el))) $
+		isNamed (fromString "{http://jabber.org/protocol/disco#items}item") =<<
+		elementChildren =<<
+		isNamed (fromString "{http://jabber.org/protocol/disco#items}query") =<<
+		toList (iqPayload iq)
+componentStanza db _ toComponent componentHost (ReceivedIQ (iq@IQ { iqType = IQError, iqFrom = Just from, iqTo = Just to, iqID = Just id }))
+	| fromString "CHEOGRAMSTARTUP%" `T.isPrefixOf` id = do
+		-- We must assume the room has been destroyed, though maybe it's just blocking our queries
+		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack (bareTxt from)))
+		TC.runTCM $ TC.out db ("presence\0" <> T.unpack (bareTxt from))
+		let tels = mapMaybe (\(nick,jid) -> ((,)nick) <$> (T.stripSuffix (fromString $ "@" <> componentHost) =<< jid)) presence
+		case tels of
+			[] -> return () -- wut?
+			((nick,tel):xs) -> do
+				-- startup_tels is who to make join once room is created.  false_presence is who thinks they're in the room already
+				True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0startup_tels") (show xs)
+				True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0false_presence") (show $ sort $ (nick,tel):xs)
+				leaveRoom db toComponent componentHost tel "Service reset" -- in case we are in and can't tell?
+				forM_ (parseJID $ bareTxt from <> fromString "/" <> nick) $ joinRoom db toComponent componentHost tel
 componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQError, iqFrom = Just from, iqTo = Just to }))
 	| (strNode <$> jidNode to) == Just (fromString "create"),
 	  Just resource <- strResource <$> jidResource to =
@@ -391,7 +426,6 @@ componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQErro
 			(tel:_) -> do
 				nick <- maybe tel fromString <$> TC.runTCM (TC.get db $ tcKey tel "nick")
 				let Just room = parseJID $ bareTxt from <> fromString "/" <> nick
-				tcPutJID db tel "creating" room
 				leaveRoom db toComponent componentHost tel "Joined a different room."
 				joinRoom db toComponent componentHost tel room
 			_ -> return () -- Invalid packet, ignore
@@ -411,14 +445,15 @@ componentStanza _ toVitelity toComponent _ (ReceivedIQ (IQ { iqType = IQResult, 
 	  fromString "CHEOGRAMCREATE%" `T.isPrefixOf` id = do
 		writeStanzaChan toVitelity $ mkSMS tel (mconcat [fromString "* You have created ", bareTxt from])
 		queryDisco toComponent from to
-componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqPayload = Just p }))
+componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/muc#owner}query") p,
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query = do
-		uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
+		uuid <- fromMaybe "UUIDFAIL" <$> (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
+		let fullid = if fromString "CHEOGRAMCREATE%" `T.isPrefixOf` id then "CHEOGRAMCREATE%" <> uuid else uuid
 		writeStanzaChan toComponent $ (emptyIQ IQSet) {
 			iqTo = Just from,
 			iqFrom = Just to,
-			iqID = Just $ fromString ("CHEOGRAMCREATE%" <> fromMaybe "UUIDFAIL" uuid),
+			iqID = Just $ fromString fullid,
 			iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#owner}query") [] [
 				NodeElement $
 				fillFormField (fromString "muc#roomconfig_publicroom") (fromString "0") $
@@ -426,13 +461,13 @@ componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = 
 				form { elementAttributes = [(fromString "{jabber:x:data}type", [ContentText $ fromString "submit"])] }
 			]
 		}
-componentStanza db _ _ _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqPayload = Just p }))
+componentStanza db _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to, iqFrom = Just from, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		let vars = mapMaybe (attributeText (fromString "var")) $
 			isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query
 		let muc_membersonly = fromEnum $ fromString "muc_membersonly" `elem` vars
 		True <- TC.runTCM $ TC.put db (T.unpack (formatJID from) <> "\0muc_membersonly") muc_membersonly
-		return ()
+		joinStartupTels db toComponent componentHost from to
 componentStanza _ _ toComponent _ (ReceivedIQ (iq@IQ { iqType = typ }))
 	| typ `elem` [IQGet, IQSet] =
 		writeStanzaChan toComponent $ iq {
@@ -445,16 +480,31 @@ componentStanza _ _ toComponent _ (ReceivedIQ (iq@IQ { iqType = typ }))
 		}
 componentStanza _ _ _ _ _ = return ()
 
+joinStartupTels db toComponent componentHost muc hopefulOwner = do
+	muc_membersonly <- maybe False toEnum <$> TC.runTCM (TC.get db (T.unpack (bareTxt muc) <> "\0muc_membersonly"))
+	startup <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt muc) <> "\0startup_tels"))
+	_ <- TC.runTCM $ TC.out db $ (T.unpack (bareTxt muc) <> "\0startup_tels")
+	forM_ startup $ \(nick, tel) -> do
+		when muc_membersonly $ forM_ (telToJid tel (fromString componentHost)) $
+			addMUCOwner toComponent muc hopefulOwner
+		forM_ (parseJID $ bareTxt muc <> fromString "/" <> nick) $ joinRoom db toComponent componentHost tel
+
+participantJid (Presence { presencePayloads = payloads }) =
+	listToMaybe $ mapMaybe (parseJID <=< attributeText (fromString "jid")) $
+	isNamed (fromString "{http://jabber.org/protocol/muc#user}item") =<<
+	elementChildren =<<
+	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
 storePresence db (ReceivedPresence (Presence { presenceType = PresenceUnavailable, presenceFrom = Just from })) = do
-	presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
-	True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ sort $ nub $ filter (/=resourceFrom) presence))
+	presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack (bareTxt from)))
+	True <- TC.runTCM (TC.put db ("presence\0" <> T.unpack (bareTxt from)) (show $ sort $ nubBy (equating f) $ filter ((/=resourceFrom).f) presence))
 	return ()
 	where
+	f = fst :: (String, Maybe String) -> String
 	resourceFrom = fromMaybe "" (T.unpack . strResource <$> jidResource from)
-storePresence db (ReceivedPresence (Presence { presenceType = PresenceAvailable, presenceFrom = Just from })) = do
-	presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (T.unpack (bareTxt from) <> "\0presence"))
-	True <- TC.runTCM (TC.put db (T.unpack (bareTxt from) <> "\0presence") (show $ sort $ nub $ resourceFrom:presence))
+storePresence db (ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from })) = do
+	presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack (bareTxt from)))
+	True <- TC.runTCM (TC.put db ("presence\0" <> T.unpack (bareTxt from)) (show $ sort $ nubBy (equating fst) $ (resourceFrom, bareTxt <$> participantJid p):presence))
 	return ()
 	where
 	resourceFrom = fromMaybe "" (T.unpack . strResource <$> jidResource from)
@@ -562,6 +612,21 @@ joinRoom db toComponent componentHost tel room = do
 		] <> pwEl)]
 	}
 
+addMUCOwner toComponent room from jid = do
+	uuid <- (fmap.fmap) UUID.toString UUID.nextUUID
+	writeStanzaChan toComponent $ (emptyIQ IQSet) {
+		iqTo = Just room,
+		iqFrom = Just from,
+		iqID = fmap fromString uuid,
+		iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#admin}admin") [] [
+			NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#admin}item")
+				[
+					(fromString "{http://jabber.org/protocol/muc#admin}affiliation", [ContentText $ fromString "owner"]),
+					(fromString "{http://jabber.org/protocol/muc#admin}jid", [ContentText $ formatJID jid])
+				] []
+		]
+	}
+
 createRoom :: TChan StanzaRec -> String -> [String] -> String -> String -> IO Bool
 createRoom toComponent componentHost (server:otherServers) tel name =
 	-- First we check if this room exists on the server already
@@ -603,14 +668,15 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 				(find (mucShortMatch tel (strDomain $ jidDomain room)) bookmarks)
 		Just Leave -> leaveRoom db toComponent componentHost tel "Typed /leave"
 		Just Who -> do
+			let f = fst :: (String, Maybe String) -> String
 			let snick = T.unpack nick
 			let room = maybe "" (T.unpack . bareTxt) existingRoom
-			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (room <> "\0presence"))
+			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> room))
 			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
 					"You are joined to ", room,
 					" as ", snick,
 					" along with\n",
-					intercalate ", " (filter (/= snick) presence)
+					intercalate ", " (filter (/= snick) $ map f presence)
 				]
 		Just List -> do
 			bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
@@ -618,21 +684,9 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 		Just (InviteCmd jid)
 			| Just room <- existingRoom -> do
 				membersonly <- maybe False toEnum <$> TC.runTCM (TC.get db (T.unpack (bareTxt room) <> "\0muc_membersonly"))
-				when membersonly $ do
+				when membersonly $ forM_ (telToJid tel (fromString componentHost)) $ \from ->
 					-- Try to add everyone we invite as an owner also
-					uuid <- (fmap.fmap) UUID.toString UUID.nextUUID
-					writeStanzaChan toComponent $ (emptyIQ IQSet) {
-						iqTo = Just room,
-						iqFrom = telToJid tel (fromString componentHost),
-						iqID = fmap fromString uuid,
-						iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#admin}admin") [] [
-							NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#admin}item")
-								[
-									(fromString "{http://jabber.org/protocol/muc#admin}affiliation", [ContentText $ fromString "owner"]),
-									(fromString "{http://jabber.org/protocol/muc#admin}jid", [ContentText $ formatJID jid])
-								] []
-						]
-					}
+					addMUCOwner toComponent room from jid
 
 				writeStanzaChan toComponent $ (emptyMessage MessageNormal) {
 					messageTo = Just room,
@@ -761,6 +815,7 @@ openTokyoCabinet pth = TC.runTCM $ do
 	return db
 
 main = do
+	putStrLn $ fromString "Starting..."
 	(name:host:port:secret:vitelityJid:vitelityPassword:conferences) <- getArgs
 	db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
 	chunks <- atomically newTChan
@@ -771,6 +826,22 @@ main = do
 	void $ forkIO $ multipartStitcher db chunks toVitelity toComponent name conferences
 
 	void $ forkIO $ forever $ print =<< runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name)
+
+	oldPresence <- TC.runTCM $ TC.fwmkeys db "presence\0" maxBound
+	forM_ (oldPresence :: [String]) $ \pkey -> do
+		let Just muc = parseJID =<< T.stripPrefix (fromString "presence\0") (T.pack pkey)
+		putStrLn $ fromString "Checking participants in " <> formatJID muc <> fromString "..."
+		presence <- fmap (mapMaybe (snd :: (Text, Maybe Text) -> Maybe Text) . fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db pkey)
+		case filter ((fromString $ "@" <> name) `T.isSuffixOf`) presence of
+			[] -> return () -- wut?
+			(x:_) -> do
+				uuid <- fromMaybe "UUIDFAIL" <$> (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
+				writeStanzaChan toComponent $ (emptyIQ IQGet) {
+					iqTo = Just muc,
+					iqFrom = parseJID x,
+					iqID = Just $ fromString $ "CHEOGRAMSTARTUP%" <> uuid,
+					iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#items}query") [] []
+				}
 
 	let Just vitelityParsedJid = parseJID $ fromString vitelityJid
 	forever $ runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
