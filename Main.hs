@@ -146,7 +146,7 @@ code str status =
 	<>
 	hasAttributeText (fromString "code") (== fromString str) status
 
-componentMessage _ toVitelity (m@Message { messageType = MessageError }) _ _ _ tel body = do
+componentMessage _ toVitelity _ (m@Message { messageType = MessageError }) _ _ _ tel body = do
 	let errorTxt = fmap (mconcat . elementText) $ listToMaybe $
 		isNamed (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text") =<<
 		elementChildren =<< isNamed (fromString "{jabber:component:accept}error") =<< messagePayloads m
@@ -158,7 +158,7 @@ componentMessage _ toVitelity (m@Message { messageType = MessageError }) _ _ _ t
 			maybe mempty (fromString "\n"<>) errorTxt,
 			maybe mempty (fromString "\n"<>) body
 		]
-componentMessage db toVitelity m existingRoom _ _ tel _
+componentMessage db toVitelity toComponent m@(Message { messageTo = Just to }) existingRoom _ _ tel _
 	| Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
 		forM_ (invitePassword invite) $ \password -> do
 			True <- TC.runTCM $ TC.put db (tcKey tel (T.unpack (formatJID $ inviteMUC invite) <> "\0muc_roomsecret")) (T.unpack password)
@@ -175,7 +175,9 @@ componentMessage db toVitelity m existingRoom _ _ tel _
 		when (existingRoom /= Just (inviteMUC invite) && existingInvite /= Just (inviteMUC invite)) $ do
 			tcPutJID db tel "invited" (inviteMUC invite)
 			writeStanzaChan toVitelity $ mkSMS tel txt
-componentMessage _ toVitelity (m@Message { messageType = MessageGroupChat }) existingRoom bareFrom resourceFrom tel (Just body) =
+			regJid <- tcGetJID db tel "registered"
+			forM_ regJid $ \jid -> sendInvite db toComponent jid (invite { inviteFrom = to })
+componentMessage _ toVitelity _ (m@Message { messageType = MessageGroupChat }) existingRoom bareFrom resourceFrom tel (Just body) =
 	if fmap bareTxt existingRoom == Just bareFrom && (
 	   existingRoom /= parseJID (bareFrom <> fromString "/" <> fromMaybe mempty resourceFrom) ||
 	   not (fromString "CHEOGRAM%" `T.isPrefixOf` fromMaybe mempty (messageID m))) then
@@ -184,11 +186,11 @@ componentMessage _ toVitelity (m@Message { messageType = MessageGroupChat }) exi
 		return () -- TODO: Error?
 	where
 	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") resourceFrom, fromString ") ", body]
-componentMessage db toVitelity (Message { messageFrom = Just from }) existingRoom _ _ tel (Just body) = do
+componentMessage db toVitelity _ (Message { messageFrom = Just from }) existingRoom _ _ tel (Just body) = do
 	nick <- nickFor db from existingRoom
 	let txt = mconcat [fromString "(", nick, fromString " whispers) ", body]
 	writeStanzaChan toVitelity $ mkSMS tel txt
-componentMessage _ _ _ _ _ _ _ _ = return ()
+componentMessage _ _ _ _ _ _ _ _ _ = return ()
 
 handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads join
 	| join,
@@ -322,6 +324,8 @@ handleVerificationCode db toComponent password iq = do
 				bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
 				forM_ (mapMaybe parseJID bookmarks) $ \bookmark ->
 					sendInvite db toComponent from (Invite bookmark (fromMaybe to $ telToJid tel (formatJID to)) (Just $ fromString "Cheogram registration") Nothing)
+
+				tcPutJID db tel "registered" from
 			_ ->
 				writeStanzaChan toComponent $ iq {
 					iqTo = iqFrom iq,
@@ -414,7 +418,7 @@ componentStanza db toVitelity toComponent componentHost (ReceivedMessage (m@Mess
 	| Just tel <- strNode <$> jidNode to,
 	  T.length tel == 11 && fromString "1" `T.isPrefixOf` tel = do
 		existingRoom <- tcGetJID db tel "joined"
-		componentMessage db toVitelity m existingRoom (bareTxt from) resourceFrom tel $
+		componentMessage db toVitelity toComponent m existingRoom (bareTxt from) resourceFrom tel $
 			getBody "jabber:component:accept" m
 	| Just jid <- (`telToJid` fromString componentHost) =<< strNode <$> jidNode to =
 		writeStanzaChan toComponent $ m {
