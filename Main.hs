@@ -147,6 +147,7 @@ code str status =
 	hasAttributeText (fromString "code") (== fromString str) status
 
 componentMessage _ toVitelity _ (m@Message { messageType = MessageError }) _ _ _ tel body = do
+	print m
 	let errorTxt = fmap (mconcat . elementText) $ listToMaybe $
 		isNamed (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text") =<<
 		elementChildren =<< isNamed (fromString "{jabber:component:accept}error") =<< messagePayloads m
