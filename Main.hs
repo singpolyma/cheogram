@@ -729,7 +729,7 @@ stripCIPrefix prefix str
 	where
 	(prefix', rest) = T.splitAt (T.length $ CI.original prefix) str
 
-data Command = Help | Create Text | Join JID | JoinInvited | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
+data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentHost
@@ -750,6 +750,7 @@ parseCommand txt room nick componentHost
 			(parseJID =<< fmap (\r -> bareTxt r <> fromString "/" <> to) room)
 		) <*> pure msg
 	| citxt == fromString "/join" = Just JoinInvited
+	| citxt == fromString "join" = Just JoinInvitedWrong
 	| citxt == fromString "/leave" = Just Leave
 	| citxt == fromString "/part" = Just Leave
 	| citxt == fromString "/who" = Just Who
@@ -868,6 +869,16 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 					leaveRoom db toComponent componentHost tel "Joined a different room."
 					joinRoom db toComponent componentHost tel room
 				Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You have not recently been invited to a group")
+		Just JoinInvitedWrong
+			| Just room <- existingRoom -> sendToRoom toComponent componentHost tel room (fromString "Join")
+			| otherwise -> do
+				invitedRoom <- tcGetJID db tel "invited"
+				let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> fromString "/" <> nick)
+				case toJoin of
+					Just room -> do
+						writeStanzaChan toVitelity $ mkSMS tel (fromString "I think you meant \"/join\", trying anyway...")
+						joinRoom db toComponent componentHost tel room
+					Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You have not recently been invited to a group")
 		Just (Create name) -> do
 			servers <- shuffleM conferenceServers
 			validRoom <- createRoom toComponent componentHost servers (T.unpack tel) (T.unpack name)
