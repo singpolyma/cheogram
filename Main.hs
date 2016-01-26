@@ -488,7 +488,15 @@ componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = P
 componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) =
 	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
 		presenceTo = Just from,
-		presenceFrom = Just to
+		presenceFrom = Just to,
+		presencePayloads = [
+			Element (fromString "{http://jabber.org/protocol/caps}c") [
+				(fromString "{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
+				(fromString "{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:sms.cheogram.com"]),
+				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:register
+				(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "el1lNscXD5fX5YOnogek1XRDoSg="])
+			] []
+		]
 	}
 componentStanza db toVitelity toComponent _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
 	| iqType iq `elem` [IQGet, IQSet],
