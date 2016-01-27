@@ -308,7 +308,7 @@ sendRegisterVerification db toVitelity toComponent tel iq = do
 			iqPayload = Just verificationResponse
 		}
 
-handleVerificationCode db toComponent password iq = do
+handleVerificationCode db toComponent componentHost password iq = do
 	time <- getCurrentTime
 	codeAndTime <- fmap (readZ =<<) $ TC.runTCM $ TC.get db regKey
 	if (fmap expires codeAndTime > Just ((-300) `addUTCTime` time)) then
@@ -328,6 +328,19 @@ handleVerificationCode db toComponent password iq = do
 
 				True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0registered") (T.unpack tel)
 				tcPutJID db tel "registered" from
+
+				-- If there is a nick that doesn't end in _sms, add _sms
+				nick <- TC.runTCM (TC.get db $ tcKey tel "nick")
+				forM_ nick $ \nick -> do
+					let nick' = (fromMaybe (fromString nick) $ T.stripSuffix (fromString "_sms") (fromString nick)) <> fromString "_sms"
+
+					existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db tel "joined"
+					forM_ existingRoom $ \room -> do
+						let toJoin = parseJID (bareTxt room <> fromString "/" <> nick')
+						forM_ toJoin $ joinRoom db toComponent componentHost tel
+
+					True <- TC.runTCM (TC.put db (tcKey tel "nick") (T.unpack nick'))
+					return ()
 			_ ->
 				writeStanzaChan toComponent $ iq {
 					iqTo = iqFrom iq,
@@ -342,7 +355,7 @@ handleVerificationCode db toComponent password iq = do
 	where
 	regKey = (maybe mempty T.unpack $ bareTxt <$> iqFrom iq) <> "\0registration_code"
 
-handleRegister db _ toComponent iq@(IQ { iqType = IQGet }) _ = do
+handleRegister db _ toComponent _ iq@(IQ { iqType = IQGet }) _ = do
 	time <- getCurrentTime
 	codeAndTime <- fmap (readZ =<<) $ TC.runTCM $ TC.get db ((maybe mempty T.unpack $ bareTxt <$> iqFrom iq) <> "\0registration_code")
 	if fmap expires codeAndTime > Just ((-300) `addUTCTime` time) then
@@ -384,22 +397,22 @@ handleRegister db _ toComponent iq@(IQ { iqType = IQGet }) _ = do
 					]
 				]
 		}
-handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
+handleRegister db toVitelity toComponent _ iq@(IQ { iqType = IQSet }) query
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query,
 	  Just tel <- (normalizeTel . T.filter isDigit) =<< getFormField form (fromString "phone") =
 		sendRegisterVerification db toVitelity toComponent tel iq
-handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
+handleRegister db toVitelity toComponent _ iq@(IQ { iqType = IQSet }) query
 	| [phoneEl] <- isNamed (fromString "{jabber:iq:register}phone") =<< elementChildren query,
 	  Just tel <- normalizeTel $ T.filter (not . isDigit) $ mconcat (elementText phoneEl) =
 		sendRegisterVerification db toVitelity toComponent tel iq
-handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
+handleRegister db toVitelity toComponent componentHost iq@(IQ { iqType = IQSet }) query
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query,
 	  Just password <- getFormField form (fromString "password") =
-		handleVerificationCode db toComponent password iq
-handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet, iqPayload = Just payload }) query
+		handleVerificationCode db toComponent componentHost password iq
+handleRegister db toVitelity toComponent componentHost iq@(IQ { iqType = IQSet, iqPayload = Just payload }) query
 	| [passwordEl] <- isNamed (fromString "{jabber:iq:register}password") =<< elementChildren query =
-		handleVerificationCode db toComponent (mconcat $ elementText passwordEl) iq
-handleRegister db _ toComponent iq@(IQ { iqType = IQSet }) query
+		handleVerificationCode db toComponent componentHost (mconcat $ elementText passwordEl) iq
+handleRegister db _ toComponent _ iq@(IQ { iqType = IQSet }) query
 	| [_] <- isNamed (fromString "{jabber:iq:register}remove") =<< elementChildren query = do
 		tel <- maybe mempty T.pack <$> TC.runTCM (TC.get db $ T.unpack (maybe mempty bareTxt $ iqFrom iq) <> "\0registered")
 		_ <- TC.runTCM $ TC.out db $ tcKey tel "registered"
@@ -410,7 +423,7 @@ handleRegister db _ toComponent iq@(IQ { iqType = IQSet }) query
 			iqType = IQResult,
 			iqPayload = Just $ Element (fromString "{jabber:iq:register}query") [] []
 		}
-handleRegister _ _ toComponent iq@(IQ { iqType = typ }) _
+handleRegister _ _ toComponent _ iq@(IQ { iqType = typ }) _
 	| typ `elem` [IQGet, IQSet] =
 		writeStanzaChan toComponent $ iq {
 			iqTo = iqFrom iq,
@@ -420,7 +433,7 @@ handleRegister _ _ toComponent iq@(IQ { iqType = typ }) _
 				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 				[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
 		}
-handleRegister _ _ _ _ _ = return ()
+handleRegister _ _ _ _ _ _ = return ()
 
 componentStanza _ _ toComponent _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
@@ -498,10 +511,10 @@ componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = P
 			] []
 		]
 	}
-componentStanza db toVitelity toComponent _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
+componentStanza db toVitelity toComponent componentHost (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
 	| iqType iq `elem` [IQGet, IQSet],
 	  [query] <- isNamed (fromString "{jabber:iq:register}query") p =
-		handleRegister db toVitelity toComponent iq query
+		handleRegister db toVitelity toComponent componentHost iq query
 componentStanza _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p =
