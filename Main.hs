@@ -389,7 +389,7 @@ handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
 	  Just tel <- (normalizeTel . T.filter isDigit) =<< getFormField form (fromString "phone") =
 		sendRegisterVerification db toVitelity toComponent tel iq
 handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
-	| [phoneEl] <- isNamed (fromString "{jabber:iq:register}phone") query,
+	| [phoneEl] <- isNamed (fromString "{jabber:iq:register}phone") =<< elementChildren query,
 	  Just tel <- normalizeTel $ T.filter (not . isDigit) $ mconcat (elementText phoneEl) =
 		sendRegisterVerification db toVitelity toComponent tel iq
 handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
@@ -397,7 +397,7 @@ handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet }) query
 	  Just password <- getFormField form (fromString "password") =
 		handleVerificationCode db toComponent password iq
 handleRegister db toVitelity toComponent iq@(IQ { iqType = IQSet, iqPayload = Just payload }) query
-	| [passwordEl] <- isNamed (fromString "{jabber:iq:register}password") query =
+	| [passwordEl] <- isNamed (fromString "{jabber:iq:register}password") =<< elementChildren query =
 		handleVerificationCode db toComponent (mconcat $ elementText passwordEl) iq
 handleRegister db _ toComponent iq@(IQ { iqType = IQSet }) query
 	| [_] <- isNamed (fromString "{jabber:iq:register}remove") =<< elementChildren query = do
