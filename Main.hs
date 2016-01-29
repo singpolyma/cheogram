@@ -258,7 +258,7 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 				fromString $ if join then "joined" else "left",
 				fromString " the group"
 			]
-	| otherwise = return ()
+	| otherwise = putStrLn (fromString "----- UNKNOWN STATUS ------") >> print (existingRoom, from, to, tel, payloads, join)
 	where
 	resourceFrom = fromMaybe mempty (strResource <$> jidResource from)
 	mod = if join then not else id
