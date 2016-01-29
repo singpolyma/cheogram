@@ -969,7 +969,7 @@ viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 	putStanza $ emptyPresence PresenceAvailable
 
 	thread <- forkXMPP $ forever $ flip catchError (liftIO . print) $ do
-		wait <- liftIO $ getStdRandom (randomR (400000,1500000))
+		wait <- liftIO $ getStdRandom (randomR (1000000,2000000))
 		stanza <- liftIO $ atomically $ readTChan toVitelity
 		forM_ (strNode <$> (jidNode =<< stanzaTo stanza)) $ \tel -> do
 			welcomed <- maybe False toEnum <$> liftIO (TC.runTCM $ TC.get db $ tcKey tel "welcomed")
