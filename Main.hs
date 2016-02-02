@@ -750,7 +750,7 @@ stripCIPrefix prefix str
 	where
 	(prefix', rest) = T.splitAt (T.length $ CI.original prefix) str
 
-data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
+data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text | VitelityBogus Text
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentHost
@@ -777,6 +777,7 @@ parseCommand txt room nick componentHost
 	| citxt == fromString "/who" = Just Who
 	| citxt == fromString "/list" = Just List
 	| citxt == fromString "/help" = Just Help
+	| citxt == fromString "You are not authorized to send SMS messages." = Just $ VitelityBogus txt
 	| otherwise = Just $ Send txt
 	where
 	citxt = CI.mk txt
@@ -968,6 +969,7 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 					"Leave group: /leave\n",
 					"More info: http://cheogram.com"
 				]
+		Just (VitelityBogus txt) -> putStrLn $ fromString "Bogus Vitelity message: " <> txt
 		Nothing -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You sent an invalid message")
 
 viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
