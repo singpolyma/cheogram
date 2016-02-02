@@ -6,7 +6,7 @@ import Control.Concurrent
 import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import System.Environment (getArgs)
-import Control.Error (readZ)
+import Control.Error (readZ, syncIO, runEitherT)
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
 import System.Random (Random(randomR), getStdRandom)
@@ -1106,7 +1106,7 @@ main = do
 	void $ forkIO $ forever $ threadDelay 1500000 >> atomically (writeTChan chunks TimerExpire)
 	void $ forkIO $ multipartStitcher db chunks toVitelity toComponent name conferences
 
-	void $ forkIO $ forever $ log "runCoponent ENDED" =<< runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name)
+	void $ forkIO $ forever $ log "runComponent ENDED" =<< (runEitherT . syncIO) (runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toComponent name))
 
 	oldPresence <- TC.runTCM $ TC.fwmkeys db "presence\0" maxBound
 	forM_ (oldPresence :: [String]) $ \pkey -> do
