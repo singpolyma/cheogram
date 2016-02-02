@@ -917,11 +917,16 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			let snick = T.unpack nick
 			let room = maybe "" (T.unpack . bareTxt) existingRoom
 			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> room))
-			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
+			let presence' = filter (/= snick) $ map f presence
+			if null presence' then
+				writeStanzaChan toVitelity $ mkSMS tel $ fromString $
+					"You are not joined to a group. Reply with /help to learn more"
+			else
+				writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
 					"You are joined to ", room,
 					" as ", snick,
 					" along with\n",
-					intercalate ", " (filter (/= snick) $ map f presence)
+					intercalate ", " presence'
 				]
 		Just List -> do
 			bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "bookmarks"))
