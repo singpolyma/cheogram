@@ -421,7 +421,7 @@ handleRegister db toVitelity toComponent _ iq@(IQ { iqType = IQSet }) query
 		sendRegisterVerification db toVitelity toComponent tel iq
 handleRegister db toVitelity toComponent _ iq@(IQ { iqType = IQSet }) query
 	| [phoneEl] <- isNamed (fromString "{jabber:iq:register}phone") =<< elementChildren query,
-	  Just tel <- normalizeTel $ T.filter (not . isDigit) $ mconcat (elementText phoneEl) = do
+	  Just tel <- normalizeTel $ T.filter isDigit $ mconcat (elementText phoneEl) = do
 		log "HANDLEREGISTER IQSet jabber:iq:register phone" iq
 		sendRegisterVerification db toVitelity toComponent tel iq
 handleRegister db toVitelity toComponent componentHost iq@(IQ { iqType = IQSet }) query
