@@ -1,6 +1,7 @@
 {-# LANGUAGE PackageImports #-}
 import Prelude (show, read)
 import BasicPrelude hiding (show, read, forM_, mapM_, getArgs, log)
+import System.IO (stdout, stderr, hSetBuffering, BufferMode(LineBuffering))
 import Data.Char
 import Control.Concurrent
 import Control.Concurrent.STM
@@ -1096,6 +1097,9 @@ openTokyoCabinet pth = TC.runTCM $ do
 	return db
 
 main = do
+	hSetBuffering stdout LineBuffering
+	hSetBuffering stderr LineBuffering
+
 	putStrLn $ fromString "Starting..."
 	(name:host:port:secret:vitelityJid:vitelityPassword:conferences) <- getArgs
 	db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
