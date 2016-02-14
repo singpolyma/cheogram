@@ -540,8 +540,8 @@ componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = P
 			Element (fromString "{http://jabber.org/protocol/caps}c") [
 				(fromString "{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
 				(fromString "{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:sms.cheogram.com"]),
-				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:register
-				(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "el1lNscXD5fX5YOnogek1XRDoSg="])
+				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:register<
+				(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "HHRxlCuqNPZAyDRpyCYX8DvAgJY="])
 			] []
 		]
 	}
