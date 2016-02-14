@@ -627,10 +627,13 @@ componentStanza db _ _ toComponent componentHost (ReceivedIQ (iq@IQ { iqType = I
 		-- Room exists and has people in it
 		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack (bareTxt from)))
 		True <- TC.runTCM $ TC.put db ("presence\0" <> T.unpack (bareTxt from)) (show $ sort $ nubBy (equating fst) items)
-		let falsePresence = mapMaybe (\(nick, jid) -> ((,)nick) <$> (T.stripSuffix (fromString $ "@" <> componentHost) =<< jid)) (presence \\ items)
+
+		let rejoinNicks = map fst (filter (\(_, jid) -> jidSuffix `T.isSuffixOf` jid) presence) \\ map fst items
+		let falsePresence = filter (\(nick, _) -> nick `elem` rejoinNicks) presence
 		True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0false_presence") (show $ sort falsePresence)
 		mapM_ (\(nick,tel) -> forM_ (room nick) (joinRoom db toComponent componentHost tel)) falsePresence
 	where
+	jidSuffix = fromString $ "@" <> componentHost
 	room nick = parseJID $ bareTxt from <> fromString "/" <> nick
 	items = map (\el -> (fromMaybe mempty $ attributeText (fromString "name") el, bareTxt <$> (parseJID =<< attributeText (fromString "jid") el))) $
 		isNamed (fromString "{http://jabber.org/protocol/disco#items}item") =<<
