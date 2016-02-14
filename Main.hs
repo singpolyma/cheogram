@@ -623,7 +623,7 @@ componentStanza _ _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = J
 		}
 componentStanza db _ _ toComponent componentHost (ReceivedIQ (iq@IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id }))
 	| fromString "CHEOGRAMSTARTUP%" `T.isPrefixOf` id = do
-		log "CHEOGRAMSTARTUP RESULT" (from, to, iq)
+		log "CHEOGRAMSTARTUP RESULT" (from, to, items, iq)
 		-- Room exists and has people in it
 		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack (bareTxt from)))
 		True <- TC.runTCM $ TC.put db ("presence\0" <> T.unpack (bareTxt from)) (show $ sort $ nubBy (equating fst) items)
