@@ -1044,7 +1044,7 @@ viteltiy db chunks toVitelity toComponent componentHost conferenceServers = do
 
 	flip catchError (\e -> liftIO (log "viteltiy part 2 EXCEPTION" e >> killThread thread)) $ forever $ do
 		m <- getMessage <$> getStanza
-		log "VITELITY  IN" m
+		mapM_ (log "VITELITY  IN") m
 		liftIO $ case (strNode <$> (jidNode =<< messageFrom =<< m), getBody "jabber:client" =<< m) of
 			(Just tel, Just txt) ->
 				case parseOnly (chunkParser tel) txt of
