@@ -531,8 +531,8 @@ componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = P
 		presenceTo = Just from,
 		presenceFrom = Just to
 	}
-componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
-	log "AVAILABLE, SO ARE WE" (from, to)
+componentStanza _ _ toComponent _ (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+	log "RESPOND TO PROBES" (from, to)
 	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
 		presenceTo = Just from,
 		presenceFrom = Just to,
