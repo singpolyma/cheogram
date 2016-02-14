@@ -265,8 +265,7 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 	| fmap bareTxt existingRoom == Just bareMUC = do
 		presence <- fmap (map f . fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack bareMUC))
 		log "JOINPART" (tel, existingRoom, join, resourceFrom, presence)
-		when (mod $ resourceFrom `elem` presence) $
-			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
+		writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
 				fromString "* ",
 				resourceFrom,
 				fromString " has ",
@@ -276,7 +275,6 @@ handleJoinPartRoom db toVitelity toComponent existingRoom from to tel payloads j
 	| otherwise = log "UNKNOWN STATUS" (existingRoom, from, to, tel, payloads, join)
 	where
 	resourceFrom = fromMaybe mempty (strResource <$> jidResource from)
-	mod = if join then not else id
 	Just room = parseJID bareMUC
 	bareMUC = bareTxt from
 	f = fst :: (Text, Maybe Text) -> Text
