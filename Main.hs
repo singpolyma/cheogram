@@ -626,16 +626,20 @@ componentStanza db _ _ toComponent componentHost (ReceivedIQ (iq@IQ { iqType = I
 		log "CHEOGRAMSTARTUP RESULT" (from, to, items, iq)
 		-- Room exists and has people in it
 		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> T.unpack (bareTxt from)))
-		True <- TC.runTCM $ TC.put db ("presence\0" <> T.unpack (bareTxt from)) (show $ sort $ nubBy (equating fst) items)
+		-- Keep any JID associations we already know about, items is only nicks
+		let presence' = map (\nick -> (nick, join $ lookup nick presence)) items
+		True <- TC.runTCM $ TC.put db ("presence\0" <> T.unpack (bareTxt from)) (show $ sort $ nubBy (equating fst) presence')
 
-		let rejoinNicks = map fst (filter (\(_, jid) -> jidSuffix `T.isSuffixOf` jid) presence) \\ map fst items
-		let falsePresence = filter (\(nick, _) -> nick `elem` rejoinNicks) presence
+		-- Extract tels from who we thought was in the room
+		let tels = mapMaybe (\(nick,jid) -> ((,)nick) <$> (T.stripSuffix jidSuffix =<< jid)) presence
+		let rejoinNicks = map fst tels \\ items
+		let falsePresence = filter (\(nick, _) -> nick `elem` rejoinNicks) tels
 		True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0false_presence") (show $ sort falsePresence)
 		mapM_ (\(nick,tel) -> forM_ (room nick) (joinRoom db toComponent componentHost tel)) falsePresence
 	where
 	jidSuffix = fromString $ "@" <> componentHost
 	room nick = parseJID $ bareTxt from <> fromString "/" <> nick
-	items = map (\el -> (fromMaybe mempty $ attributeText (fromString "name") el, bareTxt <$> (parseJID =<< attributeText (fromString "jid") el))) $
+	items = map (fromMaybe mempty . attributeText (fromString "name")) $
 		isNamed (fromString "{http://jabber.org/protocol/disco#items}item") =<<
 		elementChildren =<<
 		isNamed (fromString "{http://jabber.org/protocol/disco#items}query") =<<
