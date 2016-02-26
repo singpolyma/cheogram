@@ -206,8 +206,7 @@ componentMessage _ _ _ m _ _ _ _ _ = log "UNKNOWN MESSAGE" m
 handleJoinPartRoom db toVitelity toJoinPartDebouncer toComponent existingRoom from to tel payloads join
 	| join,
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads,
-	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
-	  (_:_) <- code "110" status = do
+	  not $ null $ code "110" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
 		log "JOINED" (tel, from)
 		existingInvite <- tcGetJID db tel "invited"
 		when (existingInvite == parseJID bareMUC) $ do
@@ -454,8 +453,7 @@ handleRegister _ _ _ _ _ iq = log "HANDLEREGISTER UNKNOWN" iq
 
 componentStanza _ _ _ toComponent _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
-	  [status] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x,
-	  (_:_) <- code "104" status = do
+	  not $ null $ code "104" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
 		log "CODE104" (to, from)
 		queryDisco toComponent from to
 componentStanza db toVitelity _ toComponent componentHost (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
