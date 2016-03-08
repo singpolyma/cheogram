@@ -540,8 +540,8 @@ componentStanza _ _ _ _ toComponent _ (ReceivedPresence (Presence { presenceType
 			Element (fromString "{http://jabber.org/protocol/caps}c") [
 				(fromString "{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
 				(fromString "{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:sms.cheogram.com"]),
-				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:register<
-				(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "HHRxlCuqNPZAyDRpyCYX8DvAgJY="])
+				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:register<urn:xmpp:ping<
+				(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "8kKoaGMXx3Jh/M+3EF80j9HF7sY="])
 			] []
 		]
 	}
@@ -567,6 +567,9 @@ componentStanza _ _ _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom =
 					] [],
 					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
 						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:register"])
+					] [],
+					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "urn:xmpp:ping"])
 					] []
 				]
 		}
@@ -585,6 +588,9 @@ componentStanza _ _ _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom =
 					] [],
 					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
 						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:x:conference"])
+					] [],
+					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "urn:xmpp:ping"])
 					] []
 				]
 		}
@@ -725,6 +731,15 @@ componentStanza db _ _ _ toComponent componentHost (ReceivedIQ (IQ { iqType = IQ
 			regJid <- tcGetJID db tel "registered"
 			forM_ regJid $ \jid -> forM_ (parseJID $ bareTxt to) $ \to -> sendInvite db toComponent jid (Invite from to Nothing Nothing)
 		joinStartupTels db toComponent componentHost from to
+componentStanza _ _ _ _ toComponent _ (ReceivedIQ (iq@IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqPayload = Just p }))
+	| not $ null $ isNamed (fromString "{urn:xmpp:ping}ping") p = do
+		log "urn:xmpp:ping" (from, to)
+		writeStanzaChan toComponent $ iq {
+			iqTo = Just from,
+			iqFrom = Just to,
+			iqType = IQResult,
+			iqPayload = Nothing
+		}
 componentStanza _ _ _ _ toComponent _ (ReceivedIQ (iq@IQ { iqType = typ }))
 	| typ `elem` [IQGet, IQSet] = do
 		log "REPLY WITH IQ ERROR" iq
