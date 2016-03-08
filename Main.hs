@@ -28,7 +28,9 @@ instance Ord JID where
 	compare x y = compare (show x) (show y)
 
 log :: (Show a, MonadIO m) => String -> a -> m ()
-log tag x = liftIO $ putStr (fromString $ tag <> " :: ") >> print x >> putStrLn mempty
+log tag x = liftIO $ do
+	time <- getCurrentTime
+	putStr (fromString $ show time <> " " <> tag <> " :: ") >> print x >> putStrLn mempty
 
 data StanzaRec = StanzaRec (Maybe JID) (Maybe JID) (Maybe Text) (Maybe Text) [Element] Element deriving (Show)
 mkStanzaRec x = StanzaRec (stanzaTo x) (stanzaFrom x) (stanzaID x) (stanzaLang x) (stanzaPayloads x) (stanzaToElement x)
