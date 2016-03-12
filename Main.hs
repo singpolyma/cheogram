@@ -502,7 +502,11 @@ componentStanza db toVitelity _ _ _ toComponent componentHost (ReceivedMessage (
 		}
 	where
 	resourceFrom = strResource <$> jidResource from
-componentStanza _ toVitelity _ _ _ _ _ (ReceivedPresence p@(Presence { presenceType = PresenceError, presenceFrom = Just from, presenceTo = Just to }))
+componentStanza _ toVitelity _ toRejoinManager _ _ _ (ReceivedPresence p@(Presence { presenceType = PresenceError, presenceFrom = Just from, presenceTo = Just to, presenceID = Just id }))
+	| fromString "CHEOGRAMREJOIN%" `T.isPrefixOf` id,
+	  Just tel <- strNode <$> jidNode to = do
+		log "FAILED TO REJOIN, try again in 10s" p
+		void $ forkIO $ threadDelay 10000000 >> atomically (writeTChan toRejoinManager $ ForceRejoin from tel)
 	| Just tel <- strNode <$> jidNode to = do
 		log "FAILED TO JOIN" p
 		let errorText = maybe mempty (mconcat . (fromString "\n":) . elementText) $ listToMaybe $
@@ -821,14 +825,19 @@ leaveRoom db toComponent componentHost tel reason = do
 		}
 		return ()
 
-joinRoom db toComponent componentHost tel room = do
+joinRoom db toComponent componentHost tel room =
+	rejoinRoom db toComponent componentHost tel room False
+
+rejoinRoom db toComponent componentHost tel room rejoin = do
 	log "JOIN ROOM" (room, tel)
 	password <- TC.runTCM $ TC.get db (tcKey tel (T.unpack (bareTxt room) <> "\0muc_roomsecret"))
 	let pwEl = maybe [] (\pw -> [
 			NodeElement $ Element (fromString "{http://jabber.org/protocol/muc}password") [] [NodeContent $ ContentText $ fromString pw]
 		]) password
 
+	uuid <- fromMaybe "UUIDFAIL" <$> (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
 	writeStanzaChan toComponent $ (emptyPresence PresenceAvailable) {
+		presenceID = Just $ fromString $ (if rejoin then "CHEOGRAMREJOIN%" else "") <> uuid,
 		presenceTo = Just room,
 		presenceFrom = telToJid tel (fromString componentHost),
 		presencePayloads = [Element (fromString "{http://jabber.org/protocol/muc}x") [] ([
@@ -1070,7 +1079,7 @@ data RejoinManagerCommand =
 
 data RejoinManagerState = PingSent Text | Rejoining
 
-rejoinManager db toComponent componentHost toRejoinManager =
+rejoinManager db toComponent componentHost toRoomPresences toRejoinManager =
 	next mempty
 	where
 	mkMucJid muc nick = parseJID $ bareTxt muc <> fromString "/" <> nick
@@ -1088,7 +1097,8 @@ rejoinManager db toComponent componentHost toRejoinManager =
 	go state (Joined mucJid) =
 		next $! Map.delete mucJid state
 	go state (ForceRejoin mucJid tel) = do
-		joinRoom db toComponent componentHost tel mucJid
+		atomically $ writeTChan toRoomPresences (StartRejoin tel mucJid)
+		rejoinRoom db toComponent componentHost tel mucJid True
 		next $! Map.insert mucJid Rejoining state
 	go state CheckPings = do
 		presenceKeys <- TC.runTCM $ TC.fwmkeys db "presence\0" maxBound
@@ -1110,8 +1120,8 @@ rejoinManager db toComponent componentHost toRejoinManager =
 						return $! Map.insert mucJid (PingSent tel) state
 					Just (PingSent _) -> do -- Timeout, rejoin
 						log "PING TIMEOUT" (mucJid, tel)
-						joinRoom db toComponent componentHost tel mucJid
-						return $! Map.insert mucJid Rejoining state
+						atomically $ writeTChan toRejoinManager (ForceRejoin mucJid tel)
+						return state
 					Just Rejoining -> -- Don't ping, we're working on it
 						return state
 
@@ -1121,12 +1131,15 @@ data RoomPresences =
 	RecordPart Text JID |
 	RecordNickChanged Text JID Text |
 	Clear Text JID |
+	StartRejoin Text JID |
 	GetRoomPresences Text JID (TMVar [(String, Maybe String)])
 
 roomPresences db toRoomPresences =
 	forever $ atomically (readTChan toRoomPresences) >>= go
 	where
-	go (RecordJoin tel from jid) =
+	go (RecordJoin tel from jid) = do
+		-- After a join is done we have a full presence list, remove old ones
+		void $ TC.runTCM $ TC.out db $ tcKey tel (muc from <> "\0old_presence")
 		globalAndLocal tel from ((resource from, T.unpack . bareTxt <$> jid):)
 	go (RecordPart tel from) = do
 		globalAndLocal tel from (filter ((/=resource from) . fst))
@@ -1135,10 +1148,17 @@ roomPresences db toRoomPresences =
 			map (first $ \n -> if fromString n == resource from then T.unpack nick else n)
 	go (Clear tel from) =
 		void $ TC.runTCM $ TC.out db $ tcKey tel (muc from <> "\0presence")
+	go (StartRejoin tel from) = do
+		-- Copy current presences to a holding space so we can clear when rejoin is over
+		presences <- fmap (fromMaybe "[]") $ TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0presence")
+		True <- TC.runTCM $ TC.put db (tcKey tel (muc from <> "\0old_presence")) (presences :: String)
+		void $ TC.runTCM $ TC.out db $ tcKey tel (muc from <> "\0presence")
 	go (GetRoomPresences tel from rtrn) = do
 		presences <- (fromMaybe [] . (readZ =<<)) <$>
 			(TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0presence"))
-		atomically $ putTMVar rtrn presences
+		old_presences <- (fromMaybe [] . (readZ =<<)) <$>
+			(TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0old_presence"))
+		atomically $ putTMVar rtrn $ sort $ nubBy (equating fst) $ presences <> old_presences
 
 	globalAndLocal tel from f = do
 		modify ("presence\0" <> muc from) f
@@ -1219,7 +1239,7 @@ main = do
 	void $ forkIO $ roomPresences db toRoomPresences
 
 	void $ forkIO $ forever $ atomically (writeTChan toRejoinManager CheckPings) >> threadDelay 120000000
-	void $ forkIO $ rejoinManager db toComponent name toRejoinManager
+	void $ forkIO $ rejoinManager db toComponent name toRoomPresences toRejoinManager
 
 	void $ forkIO $ forever $ log "runComponent ENDED" =<< (runEitherT . syncIO) (runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toRoomPresences toRejoinManager toJoinPartDebouncer toComponent name))
 
