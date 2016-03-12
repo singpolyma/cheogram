@@ -261,6 +261,11 @@ handleJoinPartRoom db toVitelity toRoomPresences toRejoinManager toJoinPartDebou
 				]
 			) $ attributeText (fromString "nick")
 				=<< listToMaybe (isNamed (fromString "{http://jabber.org/protocol/muc#user}item") =<< elementChildren x)
+	| not join,
+	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads,
+	  (_:_) <- code "332" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
+		log "SERVER RESTART, rejoin in 5s" (tel, from)
+		void $ forkIO $ threadDelay 5000000 >> atomically (writeTChan toRejoinManager $ ForceRejoin from tel)
 	| not join && existingRoom == Just from = do
 		log "YOU HAVE LEFT" (tel, existingRoom)
 		True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
