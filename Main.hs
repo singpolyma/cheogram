@@ -708,6 +708,8 @@ componentStanza _ _ _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQResult, iqFro
 			iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#owner}query") [] [
 				NodeElement $
 				fillFormField (fromString "muc#roomconfig_publicroom") (fromString "0") $
+				fillFormField (fromString "muc#roomconfig_persistentroom") (fromString "1") $
+				fillFormField (fromString "muc#roomconfig_allowinvites") (fromString "1") $
 				fillFormField (fromString "muc#roomconfig_membersonly") (fromString "1")
 				form { elementAttributes = [(fromString "{jabber:x:data}type", [ContentText $ fromString "submit"])] }
 			]
