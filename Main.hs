@@ -1155,8 +1155,12 @@ roomPresences db toRoomPresences =
 		void $ TC.runTCM $ TC.out db $ tcKey tel (muc from <> "\0presence")
 	go (StartRejoin tel from) = do
 		-- Copy current presences to a holding space so we can clear when rejoin is over
-		presences <- fmap (fromMaybe "[]") $ TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0presence")
-		True <- TC.runTCM $ TC.put db (tcKey tel (muc from <> "\0old_presence")) (presences :: String)
+		presences <- (fromMaybe [] . (readZ =<<)) <$>
+			(TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0presence"))
+		old_presences <- (fromMaybe [] . (readZ =<<)) <$>
+			(TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0old_presence"))
+		True <- TC.runTCM $ TC.put db (tcKey tel (muc from <> "\0old_presence"))
+			(show (presences <> old_presences :: [(String, Maybe String)]))
 		void $ TC.runTCM $ TC.out db $ tcKey tel (muc from <> "\0presence")
 	go (GetRoomPresences tel from rtrn) = do
 		presences <- (fromMaybe [] . (readZ =<<)) <$>
