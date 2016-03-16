@@ -547,8 +547,8 @@ componentStanza _ _ _ _ _ toComponent _ (ReceivedPresence (Presence { presenceTy
 			Element (fromString "{http://jabber.org/protocol/caps}c") [
 				(fromString "{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
 				(fromString "{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:sms.cheogram.com"]),
-				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:register<urn:xmpp:ping<
-				(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "8kKoaGMXx3Jh/M+3EF80j9HF7sY="])
+				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<
+				(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "4/LEvjGRsHBQRu9D+1NwytYdFUY="])
 			] []
 		]
 	}
@@ -571,6 +571,9 @@ componentStanza _ _ _ _ _ toComponent _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom
 						(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
 						(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "sms"]),
 						(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram SMS Gateway"])
+					] [],
+					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:gateway"])
 					] [],
 					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
 						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:register"])
