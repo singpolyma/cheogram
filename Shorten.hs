@@ -19,11 +19,14 @@ getShortenURL :: String -> IO String
 getShortenURL url = fmap C.unpack responseBody
   where responseBody = get (C.pack (polrParams url)) concatHandler
 
+shorten :: String -> IO String
+shorten message
+  | length message < 160 = return message
+  | otherwise            = replaceWithIO message getShortenURL
+
 replaceWithIO :: String -> (String -> IO String) -> IO String
-replaceWithIO message shorten =
-  case length message > 160 of
-    True  -> unwords <$> (sequence . map replaceLink $ (words message))
-             where replaceLink str 
-                     | isLink str = shorten str 
-                     | otherwise  = return str 
-    False -> return message
+replaceWithIO message shortenF =
+    unwords <$> (sequence . map replaceLink $ (words message))
+      where replaceLink str
+        | isLink str = shortenF str
+        | otherwise  = return str
