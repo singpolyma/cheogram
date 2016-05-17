@@ -1183,7 +1183,7 @@ roomPresences db toRoomPresences =
 	muc = T.unpack . bareTxt
 	resource x = fromMaybe "" (T.unpack . strResource <$> jidResource x)
 
-data JoinPartDebounce = DebounceJoin Text JID (Maybe JID) | DebouncePart Text JID | DebouncePartExpire Text JID UTCTime deriving (Show)
+data JoinPartDebounce = DebounceJoin Text JID (Maybe JID) | DebouncePart Text JID | DebounceExpire Text JID UTCTime deriving (Show)
 
 joinPartDebouncer toVitelity toRoomPresences toJoinPartDebouncer = next mempty
 	where
@@ -1191,38 +1191,52 @@ joinPartDebouncer toVitelity toRoomPresences toJoinPartDebouncer = next mempty
 		msg <- atomically (readTChan toJoinPartDebouncer)
 		log "DEBOUNCE JOIN/PART" (msg, state)
 		go state msg >>= next
-	go state (DebounceJoin tel from mjid) = do
-		case Map.updateLookupWithKey (\_ _ -> Nothing) (tel, from) state of
-			(Just _, state') -> return state' -- There was a leave, so do not send
-			(Nothing, state') -> do
-				let nick = fromMaybe mempty (strResource <$> jidResource from)
-				presences <- syncCall toRoomPresences $ GetRoomPresences tel from
-				log "DEBOUNCE JOIN, MAYBE GONNA SEND" (tel, from, presences)
-				when (isNothing $ lookup (T.unpack nick) presences) $ do
-					atomically $ writeTChan toRoomPresences $ RecordJoin tel from mjid
-					writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
-							fromString "* ",
-							nick,
-							fromString " has joined the group"
-						]
-				return state'
-	go state (DebouncePart tel from) = do
-		time <- getCurrentTime
-		void $ forkIO $ threadDelay 120000000 >> atomically (writeTChan toJoinPartDebouncer $ DebouncePartExpire tel from time)
-		return $! Map.insert (tel, from) time state
-	go state (DebouncePartExpire tel from time) =
-		case Map.updateLookupWithKey (\_ t -> if t == time then Nothing else Just t) (tel, from) state of
-			(Just t, state') | t == time -> do
-				atomically $ writeTChan toRoomPresences $ RecordPart tel from
-				now <- getCurrentTime
-				writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
-						fromString "* ",
-						fromMaybe mempty (strResource <$> jidResource from),
-						fromString " left the group ",
-						fromString $ show $ round ((now `diffUTCTime` time) / 60),
-						fromString " minutes ago"
-					]
-				return state'
+
+	sendPart tel from time = do
+		log "DEBOUNCE PART, GONNA SEND" (tel, from, time)
+		atomically $ writeTChan toRoomPresences $ RecordPart tel from
+		now <- getCurrentTime
+		writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
+				fromString "* ",
+				fromMaybe mempty (strResource <$> jidResource from),
+				fromString " left the group ",
+				fromString $ show $ round ((now `diffUTCTime` time) / 60),
+				fromString " minutes ago"
+			]
+
+	sendJoin tel from time mjid = do
+		let nick = fromMaybe mempty (strResource <$> jidResource from)
+		presences <- syncCall toRoomPresences $ GetRoomPresences tel from
+		now <- getCurrentTime
+		log "DEBOUNCE JOIN, MAYBE GONNA SEND" (tel, from, presences)
+		when (isNothing $ lookup (T.unpack nick) presences) $ do
+			atomically $ writeTChan toRoomPresences $ RecordJoin tel from mjid
+			writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
+					fromString "* ",
+					nick,
+					fromString " joined the group ",
+					fromString $ show $ round ((now `diffUTCTime` time) / 60),
+					fromString " minutes ago"
+				]
+
+	debounceCheck state tel from mjid join =
+		case Map.lookup (tel, from) state of
+			Just (_, _, j) | j /= join -> return $! Map.delete (tel, from) state -- debounce
+			Just (_, _, _) -> return state -- ignore dupe
+			Nothing -> do
+				time <- getCurrentTime
+				void $ forkIO $ threadDelay 120000000 >> atomically (writeTChan toJoinPartDebouncer $ DebounceExpire tel from time)
+				return $! Map.insert (tel, from) (time, mjid, join) state
+
+	go state (DebounceJoin tel from mjid) =
+		debounceCheck state tel from mjid True
+	go state (DebouncePart tel from) =
+		debounceCheck state tel from Nothing False
+	go state (DebounceExpire tel from time) =
+		case Map.updateLookupWithKey (\_ (t,m,j) -> if t == time then Nothing else Just (t,m,j)) (tel, from) state of
+			(Just (t, mjid, join), state')
+				| t == time && join -> sendJoin tel from time mjid >> return state'
+				| t == time -> sendPart tel from time >> return state'
 			(_, state') -> return state'
 
 openTokyoCabinet :: (TC.TCDB a) => String -> IO a
