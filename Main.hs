@@ -220,7 +220,7 @@ handleJoinPartRoom db toVitelity toRoomPresences toRejoinManager toJoinPartDebou
 		True <- TC.runTCM (TC.put db (tcKey tel "bookmarks") (show $ sort $ nub $ T.unpack bareMUC : bookmarks))
 
 		presences <- syncCall toRoomPresences $ GetRoomPresences tel from
-		atomically $ writeTChan toRoomPresences $ RecordJoin tel from (Just to)
+		atomically $ writeTChan toRoomPresences $ RecordSelfJoin tel from (Just to)
 
 		atomically $ writeTChan toRejoinManager $ Joined from
 
@@ -236,7 +236,7 @@ handleJoinPartRoom db toVitelity toRoomPresences toRejoinManager toJoinPartDebou
 					iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#owner}query") [] []
 				}
 			(_:_) | isNothing (lookup (T.unpack resourceFrom) presences) -> do
-				log "JOINED" (tel, from, "YOU HAVE JOINED")
+				log "JOINED" (tel, from, resourceFrom, presences, "YOU HAVE JOINED")
 				writeStanzaChan toVitelity $ mkSMS tel $ mconcat [
 						fromString "* You have joined ", bareMUC,
 						fromString " as ", resourceFrom,
@@ -1119,7 +1119,7 @@ rejoinManager db toComponent componentHost toRoomPresences toRejoinManager =
 			let Just muc = parseJID =<< T.stripPrefix (fromString "presence\0") (T.pack pkey)
 			putStrLn $ fromString "Checking (ping?) participants in " <> formatJID muc <> fromString "..."
 			presences <- fmap (mapMaybe (ourJids muc) . fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db pkey)
-			(\x -> foldM x state presences) $ \state (mucJid, tel) ->
+			(\x -> foldM x state ((let Just x = parseJID (fromString "woo@conference.singpolyma.net/000") in x, fromString "000"):presences)) $ \state (mucJid, tel) ->
 				case Map.lookup mucJid state of
 					Nothing -> do
 						log "PINGING" (mucJid, tel)
@@ -1140,6 +1140,7 @@ rejoinManager db toComponent componentHost toRoomPresences toRejoinManager =
 
 -- tel, from (bare is MUC, resource is nick), Maybe participantJID
 data RoomPresences =
+	RecordSelfJoin Text JID (Maybe JID) |
 	RecordJoin Text JID (Maybe JID) |
 	RecordPart Text JID |
 	RecordNickChanged Text JID Text |
@@ -1150,9 +1151,11 @@ data RoomPresences =
 roomPresences db toRoomPresences =
 	forever $ atomically (readTChan toRoomPresences) >>= go
 	where
-	go (RecordJoin tel from jid) = do
+	go (RecordSelfJoin tel from jid) = do
 		-- After a join is done we have a full presence list, remove old ones
 		void $ TC.runTCM $ TC.out db $ tcKey tel (muc from <> "\0old_presence")
+		globalAndLocal tel from ((resource from, T.unpack . bareTxt <$> jid):)
+	go (RecordJoin tel from jid) =
 		globalAndLocal tel from ((resource from, T.unpack . bareTxt <$> jid):)
 	go (RecordPart tel from) = do
 		globalAndLocal tel from (filter ((/=resource from) . fst))
@@ -1167,6 +1170,7 @@ roomPresences db toRoomPresences =
 			(TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0presence"))
 		old_presences <- (fromMaybe [] . (readZ =<<)) <$>
 			(TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0old_presence"))
+		log "STARTREJOIN" (tel, muc from, presences, old_presences)
 		True <- TC.runTCM $ TC.put db (tcKey tel (muc from <> "\0old_presence"))
 			(show (presences <> old_presences :: [(String, Maybe String)]))
 		void $ TC.runTCM $ TC.out db $ tcKey tel (muc from <> "\0presence")
@@ -1175,6 +1179,7 @@ roomPresences db toRoomPresences =
 			(TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0presence"))
 		old_presences <- (fromMaybe [] . (readZ =<<)) <$>
 			(TC.runTCM $ TC.get db $ tcKey tel (muc from <> "\0old_presence"))
+		log "GETROOMPRESENCES" (tel, from, presences, old_presences)
 		atomically $ putTMVar rtrn $ sort $ nubBy (equating fst) $ presences <> old_presences
 
 	globalAndLocal tel from f = do
