@@ -777,7 +777,7 @@ stripCIPrefix prefix str
 	where
 	(prefix', rest) = T.splitAt (T.length $ CI.original prefix) str
 
-data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text | VitelityBogus Text
+data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Debounce Int | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text | VitelityBogus Text
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentHost
@@ -797,6 +797,8 @@ parseCommand txt room nick componentHost
 			telToJid to (fromString componentHost) <|>
 			(parseJID =<< fmap (\r -> bareTxt r <> fromString "/" <> to) room)
 		) <*> pure msg
+	| Just stime <- stripCIPrefix (fromString "/debounce ") txt,
+	  Just time <- readMay stime = Just $ Debounce time
 	| citxt == fromString "/join" = Just JoinInvited
 	| citxt == fromString "join" = Just JoinInvitedWrong
 	| citxt == fromString "/leave" = Just Leave
@@ -993,6 +995,9 @@ processSMS db toVitelity toComponent componentHost conferenceServers tel txt = d
 			| fromString "(SMSSERVER) " `T.isPrefixOf` msg -> return () -- bogus message from vitelity, ignore
 			| Just room <- existingRoom -> sendToRoom toComponent componentHost tel room msg
 			| otherwise -> writeStanzaChan toVitelity $ mkSMS tel (fromString "You are not joined to a group")
+		Just (Debounce time) -> do
+			True <- TC.runTCM (TC.put db (tcKey tel "debounce") (show time))
+			return ()
 		Just Help -> do
 			writeStanzaChan toVitelity $ mkSMS tel $ fromString $ mconcat [
 					"Invite to group: /invite phone-number\n",
@@ -1185,12 +1190,16 @@ roomPresences db toRoomPresences =
 
 data JoinPartDebounce = DebounceJoin Text JID (Maybe JID) | DebouncePart Text JID | DebounceExpire Text JID UTCTime deriving (Show)
 
-joinPartDebouncer toVitelity toRoomPresences toJoinPartDebouncer = next mempty
+joinPartDebouncer db toVitelity toRoomPresences toJoinPartDebouncer = next mempty
 	where
 	next state = do
 		msg <- atomically (readTChan toJoinPartDebouncer)
 		log "DEBOUNCE JOIN/PART" (msg, state)
 		go state msg >>= next
+
+	recordJoinPart tel from mjid join
+		| join = atomically $ writeTChan toRoomPresences $ RecordJoin tel from mjid
+		| otherwise = atomically $ writeTChan toRoomPresences $ RecordPart tel from
 
 	sendPart tel from time = do
 		log "DEBOUNCE PART, GONNA SEND" (tel, from, time)
@@ -1224,8 +1233,10 @@ joinPartDebouncer toVitelity toRoomPresences toJoinPartDebouncer = next mempty
 			Just (_, _, j) | j /= join -> return $! Map.delete (tel, from) state -- debounce
 			Just (_, _, _) -> return state -- ignore dupe
 			Nothing -> do
+				expire <- fmap (fromMaybe (-1) . (readZ =<<)) (TC.runTCM $ TC.get db (tcKey tel "debounce"))
 				time <- getCurrentTime
-				void $ forkIO $ threadDelay 120000000 >> atomically (writeTChan toJoinPartDebouncer $ DebounceExpire tel from time)
+				if expire < 0 then recordJoinPart tel from mjid join else
+					void $ forkIO $ threadDelay (expire*1000000) >> atomically (writeTChan toJoinPartDebouncer $ DebounceExpire tel from time)
 				return $! Map.insert (tel, from) (time, mjid, join) state
 
 	go state (DebounceJoin tel from mjid) =
@@ -1261,7 +1272,7 @@ main = do
 
 	void $ forkIO $ forever $ threadDelay 1500000 >> atomically (writeTChan chunks TimerExpire)
 	void $ forkIO $ multipartStitcher db chunks toVitelity toComponent name conferences
-	void $ forkIO $ joinPartDebouncer toVitelity toRoomPresences toJoinPartDebouncer
+	void $ forkIO $ joinPartDebouncer db toVitelity toRoomPresences toJoinPartDebouncer
 	void $ forkIO $ roomPresences db toRoomPresences
 
 	void $ forkIO $ forever $ atomically (writeTChan toRejoinManager CheckPings) >> threadDelay 120000000
