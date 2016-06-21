@@ -266,12 +266,17 @@ handleJoinPartRoom db toVitelity toRoomPresences toRejoinManager toJoinPartDebou
 	  (_:_) <- code "332" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
 		log "SERVER RESTART, rejoin in 5s" (tel, from)
 		void $ forkIO $ threadDelay 5000000 >> atomically (writeTChan toRejoinManager $ ForceRejoin from tel)
-	| not join && existingRoom == Just from = do
-		log "YOU HAVE LEFT" (tel, existingRoom)
-		True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
-		atomically $ writeTChan toRoomPresences $ RecordPart tel from
-		atomically $ writeTChan toRoomPresences $ Clear tel from
-		writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareMUC)
+	| not join && existingRoom == Just from =
+		case isNamed (fromString "{jabber:component:accept}status") =<< payloads of
+			[status] | fromString "Cheogram:" `T.isPrefixOf` mconcat (elementText status) -> do
+				log "YOU HAVE LEFT" (tel, existingRoom)
+				True <- TC.runTCM $ TC.out db $ tcKey tel "joined"
+				atomically $ writeTChan toRoomPresences $ RecordPart tel from
+				atomically $ writeTChan toRoomPresences $ Clear tel from
+				writeStanzaChan toVitelity $ mkSMS tel (fromString "* You have left " <> bareMUC)
+			_ -> do
+				log "IGNORING NON-CHEOGRAM PART, rejoin in 5s" (tel, existingRoom)
+				void $ forkIO $ threadDelay 5000000 >> atomically (writeTChan toRejoinManager $ ForceRejoin from tel)
 	| fmap bareTxt existingRoom == Just bareMUC && join = atomically $ writeTChan toJoinPartDebouncer $ DebounceJoin tel from (participantJid payloads)
 	| fmap bareTxt existingRoom == Just bareMUC && not join = atomically $ writeTChan toJoinPartDebouncer $ DebouncePart tel from
 	| join = do
@@ -831,7 +836,10 @@ leaveRoom db toComponent componentHost tel reason = do
 		writeStanzaChan toComponent $ (emptyPresence PresenceUnavailable) {
 			presenceTo = Just leaveRoom,
 			presenceFrom = telToJid tel (fromString componentHost),
-			presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString reason]]
+			presencePayloads = [
+				Element (fromString "{jabber:component:accept}status") []
+					[NodeContent $ ContentText $ fromString $ "Cheogram: " <> reason]
+			]
 		}
 		return ()
 
