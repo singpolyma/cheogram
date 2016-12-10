@@ -1261,6 +1261,7 @@ openTokyoCabinet pth = TC.runTCM $ do
 	True <- TC.open db pth [TC.OREADER, TC.OWRITER, TC.OCREAT]
 	return db
 
+main :: IO ()
 main = do
 	hSetBuffering stdout LineBuffering
 	hSetBuffering stderr LineBuffering
