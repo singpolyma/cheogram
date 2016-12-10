@@ -1117,7 +1117,7 @@ rejoinManager db toComponent componentHost toRoomPresences toRejoinManager =
 		presenceKeys <- TC.runTCM $ TC.fwmkeys db "presence\0" maxBound
 		(next =<<) $! (\x -> foldM x state (presenceKeys :: [String])) $ \state pkey -> do
 			let Just muc = parseJID =<< T.stripPrefix (fromString "presence\0") (T.pack pkey)
-			putStrLn $ fromString "Checking (ping?) participants in " <> formatJID muc <> fromString "..."
+			log "go state CheckPings" $ fromString "Checking (ping?) participants in " <> formatJID muc <> fromString "..."
 			presences <- fmap (mapMaybe (ourJids muc) . fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db pkey)
 			(\x -> foldM x state ((let Just x = parseJID (fromString "woo@conference.singpolyma.net/000") in x, fromString "000"):presences)) $ \state (mucJid, tel) ->
 				case Map.lookup mucJid state of
@@ -1265,7 +1265,7 @@ main = do
 	hSetBuffering stdout LineBuffering
 	hSetBuffering stderr LineBuffering
 
-	putStrLn $ fromString "Starting..."
+	log "" "Starting..."
 	(name:host:port:secret:vitelityJid:vitelityPassword:conferences) <- getArgs
 	db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
 	chunks <- atomically newTChan
