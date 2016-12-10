@@ -1284,9 +1284,16 @@ main = do
 	void $ forkIO $ forever $ atomically (writeTChan toRejoinManager CheckPings) >> threadDelay 120000000
 	void $ forkIO $ rejoinManager db toComponent name toRoomPresences toRejoinManager
 
-	void $ forkIO $ forever $ log "runComponent ENDED" =<< (runEitherT . syncIO) (runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toRoomPresences toRejoinManager toJoinPartDebouncer toComponent name))
+	void $ forkIO $ forever $
+		(log "runComponent ENDED" <=< (runEitherT . syncIO)) $
+		(log "" "runComponent STARTING" >>) $
+		runComponent (Server (fromString name) host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) (component db toVitelity toRoomPresences toRejoinManager toJoinPartDebouncer toComponent name)
 
 	let Just vitelityParsedJid = parseJID $ fromString vitelityJid
-	forever $ runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
+	forever $
+		(log "runClient ENDED" <=< (runEitherT . syncIO)) $
+		(log "runClient ENDED INTERNAL" =<<) $
+		(log "" "runClient STARTING" >>) $
+		runClient (Server (fromString "s.ms") "s.ms" (PortNumber 5222)) vitelityParsedJid (fromMaybe mempty $ strNode <$> jidNode vitelityParsedJid) (fromString vitelityPassword) $ do
 		void $ bindJID vitelityParsedJid
 		viteltiy db chunks toVitelity toComponent name conferences
