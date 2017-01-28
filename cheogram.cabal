@@ -1,6 +1,6 @@
 name:            cheogram
 version:         0.0.1
-cabal-version:   >= 1.16
+cabal-version:   >= 1.14
 license:         OtherLicense
 license-file:    COPYING
 category:        Network
@@ -11,7 +11,7 @@ stability:       experimental
 tested-with:     GHC == 7.6.3
 synopsis:        Groupchat for everyone!
 homepage:        https://github.com/singpolyma/sgx-vitelity
-bug-reports:     https://github.com/singpolyma/vgx-vitelity/issues
+bug-reports:     https://github.com/singpolyma/sgx-vitelity/issues
 build-type:      Simple
 description:
         Bridge between XMPP MUC and SMS.
@@ -25,7 +25,7 @@ executable cheogram
 
         build-depends:
                 base == 4.*,
-                basic-prelude,
+                basic-prelude <= 0.3.5.0,
                 case-insensitive,
                 containers,
                 errors < 2.0.0,
