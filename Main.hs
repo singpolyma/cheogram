@@ -790,10 +790,11 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 		liftIO $ case s of
 			(ReceivedMessage m@(Message { messageFrom = Just from, messageTo = Just to }))
 				| strDomain (jidDomain from) == backendHost,
-				  messageType m /= MessageError,
-				  Just txt <- getBody "jabber:component:accept" m,
-				  Just cheoJid <- mapToComponent from ->
-					mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
+				  to == componentJid ->
+					case (messageType m, getBody "jabber:component:accept" m, mapToComponent from) of
+						(MessageError, _, _) -> log "backend error" s
+						(_, Just txt, Just cheoJid) ->
+							mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
 			_ ->
 				mapM_ sendToComponent =<< componentStanza db (mapToBackend backendHost) toRoomPresences toRejoinManager toJoinPartDebouncer componentJid s
 	where
