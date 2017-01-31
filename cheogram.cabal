@@ -29,6 +29,7 @@ executable cheogram
                 case-insensitive,
                 containers,
                 errors < 2.0.0,
+                monad-loops,
                 monads-tf,
                 network,
                 network-protocol-xmpp == 0.4.8,
