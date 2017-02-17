@@ -176,11 +176,23 @@ componentMessage _ componentJid (m@Message { messageType = MessageGroupChat }) e
 		return []
 	where
 	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") resourceFrom, fromString ") ", body]
-componentMessage db componentJid (Message { messageFrom = Just from }) existingRoom _ _ smsJid (Just body) = do
+componentMessage db componentJid m@(Message { messageFrom = Just from }) existingRoom bareFrom resourceFrom smsJid (Just body) = do
 	log "WHISPER" (from, smsJid, body)
-	nick <- nickFor db from existingRoom
-	let txt = mconcat [fromString "(", nick, fromString " whispers) ", body]
-	return [mkStanzaRec $ mkSMS componentJid smsJid txt]
+
+	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
+	case (fmap fromString maybeRoute, parseJID $ escapeJid bareFrom ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
+		(Just route, Just routeFrom) -> do
+			log "WHISPER ROUTE" route
+			return [mkStanzaRec $ m {
+				messageFrom = Just routeFrom,
+				messageTo = parseJID $ (fromMaybe mempty $ strNode <$> jidNode smsJid) ++ s"@" ++ route
+			}]
+		_ -> do
+			nick <- nickFor db from existingRoom
+			let txt = mconcat [fromString "(", nick, fromString " whispers) ", body]
+			return [mkStanzaRec $ mkSMS componentJid smsJid txt]
+	where
+	resourceSuffix = maybe mempty (s"/"++) resourceFrom
 componentMessage _ _ m _ _ _ _ _ = do
 	log "UNKNOWN MESSAGE" m
 	return []
