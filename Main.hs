@@ -476,62 +476,30 @@ componentStanza _ _ _ _ _ _ _ (ReceivedMessage (m@Message { messageTo = Just to,
 	  not $ null $ code "104" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
 		log "CODE104" (to, from)
 		queryDisco from to
-componentStanza db mapToBackend _ _ _ _ componentJid (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
-	| Just smsJid <- mapToBackend to = do
-		log "RECEIVEDMESSAGE" m
-		existingRoom <- tcGetJID db to "joined"
-		componentMessage db componentJid m existingRoom (bareTxt from) resourceFrom smsJid $
-			getBody "jabber:component:accept" m
-	| Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to = do
-		log "MESSAGE INVALID JID" m
-		return [mkStanzaRec $ m {
-			messageFrom = Just to,
-			messageTo = Just from,
-			messageType = MessageError,
-			messagePayloads = messagePayloads m <> [
-				Element (fromString "{jabber:component:accept}error")
-				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
-				[
-					NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}gone") []
-						[NodeContent $ ContentText $ formatJID jid],
-					NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text")
-						[(fromString "xml:lang", [ContentText $ fromString "en"])]
-						[NodeContent $ ContentText $ fromString "JID must include country code: " <> formatJID jid]
-				]
-			]
-		}]
-	| otherwise = do
-		log "MESSAGE UNKNOWN JID" m
-		return [mkStanzaRec $ m {
-			messageFrom = Just to,
-			messageTo = Just from,
-			messageType = MessageError,
-			messagePayloads = messagePayloads m <> [
-				Element (fromString "{jabber:component:accept}error")
-				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
-				[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
-			]
-		}]
+componentStanza db (Just smsJid) _ _ _ _ componentJid (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from})) = do
+	log "RECEIVEDMESSAGE" m
+	existingRoom <- tcGetJID db to "joined"
+	componentMessage db componentJid m existingRoom (bareTxt from) resourceFrom smsJid $
+		getBody "jabber:component:accept" m
 	where
 	resourceFrom = strResource <$> jidResource from
-componentStanza _ mapToBackend _ toRejoinManager _ _ componentJid (ReceivedPresence p@(Presence { presenceType = PresenceError, presenceFrom = Just from, presenceTo = Just to, presenceID = Just id }))
+componentStanza _ (Just smsJid) _ toRejoinManager _ _ componentJid (ReceivedPresence p@(Presence { presenceType = PresenceError, presenceFrom = Just from, presenceTo = Just to, presenceID = Just id }))
 	| fromString "CHEOGRAMREJOIN%" `T.isPrefixOf` id = do
 		log "FAILED TO REJOIN, try again in 10s" p
 		void $ forkIO $ threadDelay 10000000 >> atomically (writeTChan toRejoinManager $ ForceRejoin from to)
 		return []
-	| Just smsJid <- mapToBackend to = do
+	| otherwise = do
 		log "FAILED TO JOIN" p
 		let errorText = maybe mempty (mconcat . (fromString "\n":) . elementText) $ listToMaybe $
 			isNamed (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text") =<<
 			elementChildren =<< isNamed (fromString "{jabber:component:accept}error") =<< presencePayloads p
 		return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "* Failed to join " <> bareTxt from <> errorText)]
-componentStanza db mapToBackend toRoomPresences toRejoinManager toJoinPartDebouncer _ componentJid (ReceivedPresence (Presence {
+componentStanza db (Just smsJid) toRoomPresences toRejoinManager toJoinPartDebouncer _ componentJid (ReceivedPresence (Presence {
 		presenceType = typ,
 		presenceFrom = Just from,
 		presenceTo = Just to,
 		presencePayloads = payloads
-	})) | typ `elem` [PresenceAvailable, PresenceUnavailable],
-	      Just smsJid <- mapToBackend to = do
+	})) | typ `elem` [PresenceAvailable, PresenceUnavailable] = do
 		existingRoom <- tcGetJID db to "joined"
 		log "JOIN PART ROOM" (from, to, typ, existingRoom, payloads)
 		handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads (typ == PresenceAvailable)
@@ -714,10 +682,9 @@ componentStanza _ _ _ toRejoinManager _ _ _ (ReceivedIQ (iq@IQ { iqType = IQErro
 		log "PING ERROR RESULT" from
 		atomically $ writeTChan toRejoinManager (PingError from)
 		return []
-componentStanza _ mapToBackend _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = IQError, iqFrom = Just from, iqTo = Just to }))
-	| Just smsJid <- mapToBackend to = do
-		log "IQ ERROR" iq
-		return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "Error while querying or configuring " <> formatJID from)]
+componentStanza _ (Just smsJid) _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = IQError, iqFrom = Just from, iqTo = Just to })) = do
+	log "IQ ERROR" iq
+	return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "Error while querying or configuring " <> formatJID from)]
 componentStanza _ _ _ _ _ _ _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/muc#owner}query") p,
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query = do
@@ -737,9 +704,8 @@ componentStanza _ _ _ _ _ _ _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just
 				form { elementAttributes = [(fromString "{jabber:x:data}type", [ContentText $ fromString "submit"])] }
 			]
 		}]
-componentStanza _ mapToBackend _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id }))
-	| Just smsJid <- mapToBackend to,
-	  fromString "CHEOGRAMCREATE%" `T.isPrefixOf` id = do
+componentStanza _ (Just smsJid) _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id }))
+	| fromString "CHEOGRAMCREATE%" `T.isPrefixOf` id = do
 		log "CHEOGRAMCREATE RESULT YOU HAVE CREATED" (from, to, iq)
 		fmap (((mkStanzaRec $ mkSMS componentJid smsJid (mconcat [fromString "* You have created ", bareTxt from])):) . concat . toList) $
 			forM (parseJID $ bareTxt to <> fromString "/create") $
@@ -807,21 +773,90 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 		putStanza stanza
 
 	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread thread)) $ forever $ do
-		s <- getStanza
-		log "COMPONENT  IN" s
-		liftIO $ case s of
-			(ReceivedMessage m@(Message { messageFrom = Just from, messageTo = Just to }))
+		stanza <- getStanza
+		log "COMPONENT  IN" stanza
+		liftIO $ case (stanzaFrom $ receivedStanza stanza, stanzaTo $ receivedStanza stanza, mapToBackend backendHost =<< stanzaTo (receivedStanza stanza), fmap strNode . jidNode =<< stanzaTo (receivedStanza stanza)) of
+			(Just from, Just to, _, _)
 				| strDomain (jidDomain from) == backendHost,
 				  to == componentJid ->
-					case (messageType m, getBody "jabber:component:accept" m, mapToComponent from) of
-						(MessageError, _, _) -> log "backend error" s
-						(_, Just txt, Just cheoJid) ->
-							mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
-			_ ->
-				mapM_ sendToComponent =<< componentStanza db (mapToBackend backendHost) toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid s
+					case stanza of
+						(ReceivedMessage m@(Message { messageType = MessageError })) ->
+							log "backend error" stanza
+						(ReceivedMessage m)
+							| Just txt <- getBody "jabber:component:accept" m,
+							  Just cheoJid <- mapToComponent from ->
+								mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
+						_ -> log "backend no match" stanza
+			(Just from, Just to, Nothing, Just localpart)
+				| fmap strResource (jidResource to) /= Just ConfigureDirectMessageRoute.nodeName -> do
+					let toResourceSuffix = maybe mempty (s"/"++) (strResource <$> jidResource to)
+					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
+					case (fmap fromString maybeRoute, parseJID (unescapeJid localpart ++ toResourceSuffix), mapToComponent from) of
+						(Just route, Just routeTo, Just componentFrom) | route == strDomain (jidDomain from) -> do
+							log "FROM DIRECT ROUTE" stanza
+							sendToComponent $ receivedStanzaFromTo componentFrom routeTo stanza
+						_ | Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to -> do
+							log "MESSAGE INVALID JID" stanza
+							sendToComponent $ stanzaError stanza $
+								Element (fromString "{jabber:component:accept}error")
+								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
+								[
+									NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}gone") []
+										[NodeContent $ ContentText $ formatJID jid],
+									NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text")
+										[(fromString "xml:lang", [ContentText $ fromString "en"])]
+										[NodeContent $ ContentText $ fromString "JID must include country code: " <> formatJID jid]
+								]
+						  | otherwise -> do
+							log "MESSAGE UNKNOWN JID" stanza
+							sendToComponent $ stanzaError stanza $
+								Element (fromString "{jabber:component:accept}error")
+								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
+								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
+			(_, _, backendTo, _) ->
+				mapM_ sendToComponent =<< componentStanza db backendTo toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid stanza
 	where
 	mapToComponent = mapToBackend (formatJID componentJid)
 	sendToComponent = atomically . writeTChan toComponent
+
+	stanzaError (ReceivedMessage m) errorPayload =
+		mkStanzaRec $ m {
+			messageFrom = messageTo m,
+			messageTo = messageFrom m,
+			messageType = MessageError,
+			messagePayloads = messagePayloads m ++ [errorPayload]
+		}
+	stanzaError (ReceivedPresence p) errorPayload =
+		mkStanzaRec $ p {
+			presenceFrom = presenceTo p,
+			presenceTo = presenceFrom p,
+			presenceType = PresenceError,
+			presencePayloads = presencePayloads p ++ [errorPayload]
+		}
+	stanzaError (ReceivedIQ iq) errorPayload =
+		mkStanzaRec $ iq {
+			iqFrom = iqTo iq,
+			iqTo = iqFrom iq,
+			iqType = IQError,
+			iqPayload = Just errorPayload
+		}
+
+	receivedStanzaFromTo from to (ReceivedMessage m) = mkStanzaRec $ m {
+			messageFrom = Just from,
+			messageTo = Just to
+		}
+	receivedStanzaFromTo from to (ReceivedPresence p) = mkStanzaRec $ p {
+			presenceFrom = Just from,
+			presenceTo = Just to
+		}
+	receivedStanzaFromTo from to (ReceivedIQ iq) = mkStanzaRec $ iq {
+			iqFrom = Just from,
+			iqTo = Just to
+		}
+
+	receivedStanza (ReceivedMessage m) = mkStanzaRec m
+	receivedStanza (ReceivedPresence p) = mkStanzaRec p
+	receivedStanza (ReceivedIQ iq) = mkStanzaRec iq
 
 mapToBackend backendHost jid
 	| Just localpart <- strNode <$> jidNode jid,
@@ -829,11 +864,14 @@ mapToBackend backendHost jid
 	  T.all isDigit tel = parseJID (localpart <> fromString "@" <> backendHost)
 	| otherwise = Nothing
 
-normalizeTel tel
-	| not $ all isDigit $ T.unpack tel = Nothing
-	| T.length tel == 10 = Just $ T.cons '1' tel
-	| T.length tel == 11, fromString "1" `T.isPrefixOf` tel = Just tel
+normalizeTel fullTel
+	| Just ('+',e164) <- T.uncons fullTel,
+	  T.all isDigit e164 = Just fullTel
+	| T.length tel == 10 = Just (s"+1" ++ tel)
+	| T.length tel == 11, s"1" `T.isPrefixOf` tel = Just (T.cons '+' tel)
 	| otherwise = Nothing
+	where
+	tel = T.filter isDigit fullTel
 
 telToJid tel host = parseJID =<< (<> fromString "@" <> host) <$> normalizeTel tel
 
