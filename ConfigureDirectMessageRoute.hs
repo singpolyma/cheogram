@@ -40,7 +40,7 @@ main setRouteJid = do
 processOneIQ :: (XMPP.JID -> XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> XMPP.IQ -> IO (Map SessionID (Session, UTCTime), XMPP.IQ)
 processOneIQ setRouteJid sessions iq@(XMPP.IQ { XMPP.iqID = Just iqID, XMPP.iqFrom = Just from, XMPP.iqPayload = realPayload })
 	| Just sid <- sessionIDFromText . snd =<< T.uncons =<< T.stripPrefix (s"ConfigureDirectMessageRoute") iqID,
-          XMPP.iqType iq == XMPP.IQResult =
+          XMPP.iqType iq == XMPP.IQResult || XMPP.iqType iq == XMPP.IQError =
 		lookupAndStepSession setRouteJid sessions sid iqID from payload
 	| elementName payload /= s"{http://jabber.org/protocol/commands}command" ||
 	  attributeText (s"node") payload /= Just nodeName = do
@@ -93,24 +93,31 @@ type Session = Session' (SessionResult, XMPP.IQ)
 data RegisterFormType = DataForm | LegacyRegistration
 
 stage5 :: Text -> XMPP.JID -> Session
-stage5 stage4iqID stage4from sid iqID from error =
-	(SessionComplete stage4from from, (XMPP.emptyIQ XMPP.IQResult) {
-		XMPP.iqID = Just stage4iqID,
-		XMPP.iqTo = Just stage4from,
-		XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command")
-			[
-				(s"{http://jabber.org/protocol/commands}node", [ContentText nodeName]),
-				(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ sessionIDToText sid]),
-				(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"completed"])
-			]
-			[
-				NodeElement $ Element (s"{http://jabber.org/protocol/commands}note") [
-					(s"{http://jabber.org/protocol/commands}type", [ContentText $ s"info"])
-				] [
-					NodeContent $ ContentText $ s"Registration complete."
+stage5 stage4iqID stage4from sid iqID from error
+	| elementName error == s"{jabber:component:accept}error" =
+		(SessionCancel, (XMPP.emptyIQ XMPP.IQError) {
+			XMPP.iqID = Just stage4iqID,
+			XMPP.iqTo = Just stage4from,
+			XMPP.iqPayload = Just error
+		})
+	| otherwise =
+		(SessionComplete stage4from from, (XMPP.emptyIQ XMPP.IQResult) {
+			XMPP.iqID = Just stage4iqID,
+			XMPP.iqTo = Just stage4from,
+			XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command")
+				[
+					(s"{http://jabber.org/protocol/commands}node", [ContentText nodeName]),
+					(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ sessionIDToText sid]),
+					(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"completed"])
 				]
-			]
-	})
+				[
+					NodeElement $ Element (s"{http://jabber.org/protocol/commands}note") [
+						(s"{http://jabber.org/protocol/commands}type", [ContentText $ s"info"])
+					] [
+						NodeContent $ ContentText $ s"Registration complete."
+					]
+				]
+		})
 
 stage4 :: RegisterFormType -> XMPP.JID -> Session
 stage4 formType gatewayJid sid iqID from command
@@ -129,6 +136,12 @@ stage4 formType gatewayJid sid iqID from command
 
 stage3 :: Text -> XMPP.JID -> Session
 stage3 stage2iqID stage2from sid iqID from query
+	| elementName query == s"{jabber:component:accept}error" =
+		(SessionCancel, (XMPP.emptyIQ XMPP.IQError) {
+			XMPP.iqID = Just stage2iqID,
+			XMPP.iqTo = Just stage2from,
+			XMPP.iqPayload = Just query
+		})
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query = processForm DataForm form
 	| otherwise = processForm LegacyRegistration (convertQueryToForm query)
 	where
