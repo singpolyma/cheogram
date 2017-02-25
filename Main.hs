@@ -141,6 +141,20 @@ code str status =
 	<>
 	hasAttributeText (fromString "code") (== fromString str) status
 
+cheogramAvailable from to =
+	(emptyPresence PresenceAvailable) {
+		presenceTo = Just to,
+		presenceFrom = Just from,
+		presencePayloads = [
+			Element (s"{http://jabber.org/protocol/caps}c") [
+				(s"{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
+				(s"{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:cheogram.com"]),
+				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<
+				(s"{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "4/LEvjGRsHBQRu9D+1NwytYdFUY="])
+			] []
+		]
+	}
+
 componentMessage _ componentJid (m@Message { messageType = MessageError }) _ _ _ smsJid body = do
 	log "MESSAGE ERROR"  m
 	return [mkStanzaRec $ m { messageTo = Just smsJid, messageFrom = Just componentJid }]
@@ -504,7 +518,6 @@ componentStanza db (Just smsJid) toRoomPresences toRejoinManager toJoinPartDebou
 		log "JOIN PART ROOM" (from, to, typ, existingRoom, payloads)
 		handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads (typ == PresenceAvailable)
 componentStanza _ _ _ _ _ _ _ (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
-	log "APPROVE SUBSCRIPTION" (from, to)
 	log "SUBSCRIBE" (from, to)
 	return [
 			mkStanzaRec $ (emptyPresence PresenceSubscribed) {
@@ -514,22 +527,12 @@ componentStanza _ _ _ _ _ _ _ (ReceivedPresence (Presence { presenceType = Prese
 			mkStanzaRec $ (emptyPresence PresenceSubscribe) {
 				presenceTo = Just from,
 				presenceFrom = Just to
-			}
+			},
+			mkStanzaRec $ cheogramAvailable to from
 		]
 componentStanza _ _ _ _ _ _ _ (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	log "RESPOND TO PROBES" (from, to)
-	return [mkStanzaRec $ (emptyPresence PresenceAvailable) {
-		presenceTo = Just from,
-		presenceFrom = Just to,
-		presencePayloads = [
-			Element (fromString "{http://jabber.org/protocol/caps}c") [
-				(fromString "{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
-				(fromString "{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:cheogram.com"]),
-				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<
-				(fromString "{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "4/LEvjGRsHBQRu9D+1NwytYdFUY="])
-			] []
-		]
-	}]
+	return [mkStanzaRec $ cheogramAvailable to from]
 componentStanza _ _ _ _ _ processDirectMessageRouteConfig componentJid (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = payload }))
 	| (jidNode to == Nothing && fmap elementName payload == Just (s"{http://jabber.org/protocol/commands}command")) ||
 	  fmap strResource (jidResource to) == Just ConfigureDirectMessageRoute.nodeName = do
