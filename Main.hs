@@ -60,7 +60,7 @@ getBody ns = listToMaybe . fmap (mconcat . elementText) . (isNamed (Name (fromSt
 
 queryDisco to from = do
 	uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
-	return $ [mkStanzaRec $ (emptyIQ IQGet) {
+	return [mkStanzaRec $ (emptyIQ IQGet) {
 		iqTo = Just to,
 		iqFrom = Just from,
 		iqID = uuid,
@@ -149,11 +149,34 @@ cheogramAvailable from to =
 			Element (s"{http://jabber.org/protocol/caps}c") [
 				(s"{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
 				(s"{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:cheogram.com"]),
-				-- gateway/sms//Cheogram SMS Gateway<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<
-				(s"{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "4/LEvjGRsHBQRu9D+1NwytYdFUY="])
+				-- gateway/sms//Cheogram<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<
+				(s"{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "QEUi902gYi/nDHreMi6vQ6h9HW0="])
 			] []
 		]
 	}
+
+telDiscoFeatures = [
+		"http://jabber.org/protocol/muc",
+		"jabber:x:conference",
+		"urn:xmpp:ping"
+	]
+
+telAvailable from to disco =
+	(emptyPresence PresenceAvailable) {
+		presenceTo = Just to,
+		presenceFrom = Just from,
+		presencePayloads = []
+	}
+
+routeDiscoOrPresenceReply db componentJid from to smsJid = do
+	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
+	case (fmap fromString maybeRoute, maybeRouteFrom) of
+		(Just route, Just routeFrom) ->
+				let routeTo = fromMaybe componentJid $ parseJID $ (fromMaybe mempty $ strNode <$> jidNode smsJid) ++ s"@" ++ route in
+				queryDisco routeTo routeFrom
+		_ -> return [mkStanzaRec $ telAvailable to from []]
+	where
+	maybeRouteFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/query-then-send-presence"
 
 componentMessage _ componentJid (m@Message { messageType = MessageError }) _ _ _ smsJid body = do
 	log "MESSAGE ERROR"  m
@@ -518,7 +541,7 @@ componentStanza db (Just smsJid) toRoomPresences toRejoinManager toJoinPartDebou
 		log "JOIN PART ROOM" (from, to, typ, existingRoom, payloads)
 		handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads (typ == PresenceAvailable)
 componentStanza _ _ _ _ _ _ _ (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
-	log "SUBSCRIBE" (from, to)
+	log "SUBSCRIBE GATEWAY" (from, to)
 	return [
 			mkStanzaRec $ (emptyPresence PresenceSubscribed) {
 				presenceTo = Just from,
@@ -530,9 +553,25 @@ componentStanza _ _ _ _ _ _ _ (ReceivedPresence (Presence { presenceType = Prese
 			},
 			mkStanzaRec $ cheogramAvailable to from
 		]
+componentStanza db (Just smsJid) _ _ _ _ componentJid (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just _ } })) = do
+	log "SUBSCRIBE TEL" (from, to)
+	stanzas <- routeDiscoOrPresenceReply db componentJid from to smsJid
+	return $ [
+			mkStanzaRec $ (emptyPresence PresenceSubscribed) {
+				presenceTo = Just from,
+				presenceFrom = Just to
+			},
+			mkStanzaRec $ (emptyPresence PresenceSubscribe) {
+				presenceTo = Just from,
+				presenceFrom = Just to
+			}
+		] ++ stanzas
 componentStanza _ _ _ _ _ _ _ (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	log "RESPOND TO PROBES" (from, to)
 	return [mkStanzaRec $ cheogramAvailable to from]
+componentStanza db (Just smsJid) _ _ _ _ componentJid (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just _ } })) = do
+	log "RESPOND TO TEL PROBES" smsJid
+	routeDiscoOrPresenceReply db componentJid from to smsJid
 componentStanza _ _ _ _ _ processDirectMessageRouteConfig componentJid (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = payload }))
 	| (jidNode to == Nothing && fmap elementName payload == Just (s"{http://jabber.org/protocol/commands}command")) ||
 	  fmap strResource (jidResource to) == Just ConfigureDirectMessageRoute.nodeName = do
@@ -560,7 +599,7 @@ componentStanza _ _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQGet, iqFro
 					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}identity") [
 						(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
 						(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "sms"]),
-						(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram SMS Gateway"])
+						(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram"])
 					] [],
 					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
 						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:gateway"])
@@ -599,18 +638,18 @@ componentStanza _ _ _ _ _ _ _ (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just fr
 			iqTo = Just from,
 			iqFrom = Just to,
 			iqID = id,
-			iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") []
+			iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") [] $
 				[
+					NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
+						(s"{http://jabber.org/protocol/disco#info}category", [ContentText $ s"client"]),
+						(s"{http://jabber.org/protocol/disco#info}type", [ContentText $ s"sms"]),
+						(s"{http://jabber.org/protocol/disco#info}name", [ContentText $ s"Cheogram"])
+					] []
+				] ++ map (\var ->
 					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
 						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "http://jabber.org/protocol/muc"])
-					] [],
-					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:x:conference"])
-					] [],
-					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "urn:xmpp:ping"])
 					] []
-				]
+				) telDiscoFeatures
 		}]
 componentStanza _ _ _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = IQSet, iqFrom = Just from, iqTo = Just (to@JID {jidNode = Nothing}), iqID = id, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{jabber:iq:gateway}query") p,
@@ -691,7 +730,7 @@ componentStanza _ (Just smsJid) _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType
 componentStanza _ _ _ _ _ _ _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/muc#owner}query") p,
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query = do
-		log "DISCO RESULT" (from, to, p)
+		log "MUC DISCO RESULT" (from, to, p)
 		uuid <- fromMaybe "UUIDFAIL" <$> (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
 		let fullid = if fromString "CHEOGRAMCREATE%" `T.isPrefixOf` id then "CHEOGRAMCREATE%" <> uuid else uuid
 		return [mkStanzaRec $ (emptyIQ IQSet) {
@@ -713,9 +752,18 @@ componentStanza _ (Just smsJid) _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType
 		fmap (((mkStanzaRec $ mkSMS componentJid smsJid (mconcat [fromString "* You have created ", bareTxt from])):) . concat . toList) $
 			forM (parseJID $ bareTxt to <> fromString "/create") $
 				queryDisco from
-componentStanza db _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to, iqFrom = Just from, iqPayload = Just p }))
-	| Just _ <- strNode <$> jidNode to,
-	  [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
+componentStanza db _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to@(JID { jidNode = Just toNode }), iqFrom = Just from, iqPayload = Just p }))
+	| fmap strResource (jidResource to) == Just (s"query-then-send-presence"),
+	  [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p,
+	  Just routeTo <- parseJID (unescapeJid (strNode toNode)),
+	  Just fromNode <- jidNode from,
+	  Just routeFrom <- parseJID (strNode fromNode ++ s"@" ++ formatJID componentJid) = do
+		log "DISCO RESULT, NOW SEND PRESENCE" (from, to, routeFrom, routeTo)
+		return [
+				mkStanzaRec $ telAvailable routeFrom routeTo $ mapMaybe (attributeText (fromString "var")) $
+				isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query
+			]
+	| [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		log "DISCO RESULT" (from, to, p)
 		let vars = mapMaybe (attributeText (fromString "var")) $
 			isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query
@@ -791,7 +839,8 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 								mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
 						_ -> log "backend no match" stanza
 			(Just from, Just to, Nothing, Just localpart)
-				| fmap strResource (jidResource to) /= Just ConfigureDirectMessageRoute.nodeName -> do
+				| fmap strResource (jidResource to) /= Just ConfigureDirectMessageRoute.nodeName,
+				  fmap strResource (jidResource to) /= Just (s"query-then-send-presence") -> do
 					let toResourceSuffix = maybe mempty (s"/"++) (strResource <$> jidResource to)
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
 					case (fmap fromString maybeRoute, parseJID (unescapeJid localpart ++ toResourceSuffix), mapToComponent from) of
