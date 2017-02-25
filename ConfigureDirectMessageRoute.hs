@@ -80,6 +80,10 @@ lookupAndStepSession setRouteJid sessions sid iqID from payload
 					now <- getCurrentTime
 					return $! Map.insert sid (s, now) sessions
 				SessionCancel -> return $! Map.delete sid sessions
+				SessionSaveAndNext userJid gatewayJid s -> do
+					now <- getCurrentTime
+					userJid `setRouteJid` gatewayJid
+					return $! Map.insert sid (s, now) sessions
 				SessionComplete userJid gatewayJid -> do
 					userJid `setRouteJid` gatewayJid
 					return $! Map.delete sid sessions
@@ -87,7 +91,7 @@ lookupAndStepSession setRouteJid sessions sid iqID from payload
 		log "ConfigureDirectMessageRoute.processOneIQ NO SESSION FOUND" (sid, iqID, from, payload)
 		return (sessions, iqError (Just iqID) (Just from) "modify" "bad-request" (Just "bad-sessionid"))
 
-data SessionResult = SessionNext Session | SessionCancel | SessionComplete XMPP.JID XMPP.JID
+data SessionResult = SessionNext Session | SessionCancel | SessionSaveAndNext XMPP.JID XMPP.JID Session | SessionComplete XMPP.JID XMPP.JID
 type Session' a = SessionID -> Text -> XMPP.JID -> Element -> a
 type Session = Session' (SessionResult, XMPP.IQ)
 
@@ -146,8 +150,12 @@ stage3 stage2iqID stage2from sid iqID from query
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query = processForm DataForm form
 	| otherwise = processForm LegacyRegistration (convertQueryToForm query)
 	where
+	sessionNext
+		| [_] <- isNamed (fromString "{jabber:iq:register}registered") =<< elementChildren query =
+			SessionSaveAndNext stage2from from
+		| otherwise = SessionNext
 	processForm typ form =
-		(SessionNext $ stage4 typ from, (XMPP.emptyIQ XMPP.IQResult) {
+		(sessionNext $ stage4 typ from, (XMPP.emptyIQ XMPP.IQResult) {
 			XMPP.iqID = Just stage2iqID,
 			XMPP.iqTo = Just stage2from,
 			XMPP.iqPayload = Just $ commandStage sid form
