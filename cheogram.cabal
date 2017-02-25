@@ -28,7 +28,7 @@ executable cheogram
                 basic-prelude <= 0.3.5.0,
                 attoparsec,
                 base64-bytestring,
-                bytestring,
+                bytestring >= 0.10.0.0,
                 case-insensitive,
                 containers,
                 errors < 2.0.0,
