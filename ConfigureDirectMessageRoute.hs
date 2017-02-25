@@ -54,7 +54,12 @@ processOneIQ getRouteJid setRouteJid sessions iq@(XMPP.IQ { XMPP.iqID = Just iqI
 		existingRoute <- getRouteJid from
 		return (Map.insert sid (session, now) sessions, stage1 existingRoute from iqID sid)
 	where
-	payload = fromMaybe (Element (s"no-payload") [] []) realPayload
+	payload
+		| Just p <- realPayload,
+		  XMPP.iqType iq == XMPP.IQError && elementName p == s"{jabber:component:accept}error" = p
+		| XMPP.iqType iq == XMPP.IQError =
+			let Just p = XMPP.iqPayload $ iqError Nothing Nothing "cancel" "internal-server-error" Nothing in p
+		| otherwise = fromMaybe (Element (s"no-payload") [] []) realPayload
 processOneIQ _ _ sessions iq@(XMPP.IQ { XMPP.iqID = iqID, XMPP.iqFrom = from }) = do
 	log "ConfigureDirectMessageRoute.processOneIQ BAD INPUT" iq
 	return (sessions, iqError iqID from "cancel" "feature-not-implemented" Nothing)
