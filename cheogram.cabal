@@ -39,7 +39,7 @@ executable cheogram
                 random,
                 random-shuffle,
                 SHA,
-                stm,
+                stm >= 2.4,
                 text,
                 time,
                 tokyocabinet-haskell,
