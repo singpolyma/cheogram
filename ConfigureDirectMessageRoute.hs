@@ -155,10 +155,12 @@ stage3 stage2iqID stage2from sid iqID from query
 stage2 :: Session
 stage2 sid iqID from command
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
-	  Just gatewayJid <- XMPP.parseJID =<< getFormField form (s"gateway-jid") =
+	  Just gatewayJid <- XMPP.parseJID =<< getFormField form (s"gateway-jid"),
+	  Just sendFrom <- XMPP.parseJID $ (escapeJid $ bareTxt from) ++ s"@cheogram" =
 		(SessionNext $ stage3 iqID from, (XMPP.emptyIQ XMPP.IQGet) {
 			XMPP.iqID = Just (s"ConfigureDirectMessageRoute2" ++ sessionIDToText sid),
 			XMPP.iqTo = Just gatewayJid,
+			XMPP.iqFrom = Just sendFrom, -- domain gets rewritten by main cheogram program
 			XMPP.iqPayload = Just $ Element (s"{jabber:iq:register}query") [] []
 		})
 	| otherwise = (SessionCancel, iqError (Just iqID) (Just from) "modify" "bad-request" (Just "bad-payload"))
@@ -250,17 +252,19 @@ convertQueryToForm query =
 		] ([
 			NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ s"Register"],
 			NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [NodeContent $ ContentText instructions]
-		] ++ map (NodeElement . field) vars)
+		] ++ map (NodeElement . uncurry field) vars)
 	where
-	field var =
+	field var text =
 		Element (fromString "{jabber:x:data}field") [
 			(s"{jabber:x:data}type", [ContentText $ if var == s"password" then s"text-private" else s"text-single"]),
 			(s"{jabber:x:data}var", [ContentText var]),
 			(s"{jabber:x:data}label", [ContentText var])
-		] []
+		] [
+			NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText text]
+		]
 	instructions = mconcat $ elementText =<< isNamed (s"{jabber:iq:register}instructions") =<< elementChildren query
 	vars =
 		map snd $
-		filter (\(ns, var) -> ns == s"jabber:iq:register" && var `notElem` [s"registered", s"instructions"]) $
-		mapMaybe (\el -> let name = elementName el in (,) <$> nameNamespace name <*> pure (nameLocalName name)) $
+		filter (\(ns, (var, _)) -> ns == s"jabber:iq:register" && var `notElem` [s"registered", s"instructions"]) $
+		mapMaybe (\el -> let name = elementName el in (,) <$> nameNamespace name <*> pure (nameLocalName name, mconcat $ elementText el)) $
 		elementChildren query
