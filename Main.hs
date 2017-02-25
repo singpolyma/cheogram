@@ -1349,7 +1349,11 @@ main = do
 			void $ forkIO $ forever $ atomically (writeTChan toRejoinManager CheckPings) >> threadDelay 120000000
 			void $ forkIO $ rejoinManager db (atomically . writeTChan sendToComponent) name toRoomPresences toRejoinManager
 
-			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main (\userJid gatewayJid -> do
+			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main
+				(\userJid ->
+					(parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
+				)
+				(\userJid gatewayJid -> do
 					log "SETTING DIRECT MESSAGE ROUTE" (userJid, gatewayJid)
 					True <- TC.runTCM $ TC.put db (T.unpack (bareTxt userJid) ++ "\0direct-message-route") (T.unpack $ formatJID gatewayJid)
 					return ()
