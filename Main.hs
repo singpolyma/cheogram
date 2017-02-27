@@ -162,7 +162,8 @@ cheogramAvailable from to =
 telDiscoFeatures = [
 		s"http://jabber.org/protocol/muc",
 		s"jabber:x:conference",
-		s"urn:xmpp:ping"
+		s"urn:xmpp:ping",
+		s"urn:xmpp:receipts"
 	]
 
 telCapsStr extraVars =
@@ -212,6 +213,16 @@ routeDiscoOrReply db componentJid from smsJid resource reply = do
 	where
 	maybeRouteFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/" ++ (fromString resource)
 
+deliveryReceipt id from to =
+	(emptyMessage MessageNormal) {
+		messageFrom = Just from,
+		messageTo = Just to,
+		messagePayloads = [
+			Element (s"{urn:xmpp:receipts}received")
+				[(s"{urn:xmpp:receipts}id", [ContentText id])] []
+		]
+	}
+
 componentMessage _ componentJid (m@Message { messageType = MessageError }) _ _ _ smsJid body = do
 	log "MESSAGE ERROR"  m
 	return [mkStanzaRec $ m { messageTo = Just smsJid, messageFrom = Just componentJid }]
@@ -247,11 +258,17 @@ componentMessage _ componentJid (m@Message { messageType = MessageGroupChat }) e
 		return []
 	where
 	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") resourceFrom, fromString ") ", body]
-componentMessage db componentJid m@(Message { messageFrom = Just from }) existingRoom bareFrom resourceFrom smsJid (Just body) = do
+componentMessage db componentJid m@(Message { messageFrom = Just from, messageTo = Just to }) existingRoom bareFrom resourceFrom smsJid (Just body) = do
 	log "WHISPER" (from, smsJid, body)
 
+	ack <- case isNamed (fromString "{urn:xmpp:receipts}request") =<< messagePayloads m of
+		(_:_) ->
+			routeDiscoOrReply db componentJid from smsJid ("CHEOGRAM%query-then-send-ack%" ++ extra)
+				(deliveryReceipt (fromMaybe mempty $ messageID m) to from)
+		[] -> return []
+
 	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-	case (fmap fromString maybeRoute, parseJID $ escapeJid bareFrom ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
+	fmap (++ack) $ case (fmap fromString maybeRoute, parseJID $ escapeJid bareFrom ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
 		(Just route, Just routeFrom) -> do
 			log "WHISPER ROUTE" route
 			return [mkStanzaRec $ m {
@@ -263,6 +280,7 @@ componentMessage db componentJid m@(Message { messageFrom = Just from }) existin
 			let txt = mconcat [fromString "(", nick, fromString " whispers) ", body]
 			return [mkStanzaRec $ mkSMS componentJid smsJid txt]
 	where
+	extra = T.unpack $ escapeJid $ T.pack $ show (fromMaybe mempty (messageID m), fromMaybe mempty resourceFrom)
 	resourceSuffix = maybe mempty (s"/"++) resourceFrom
 componentMessage _ _ m _ _ _ _ _ = do
 	log "UNKNOWN MESSAGE" m
@@ -775,6 +793,19 @@ componentStanza _ (Just smsJid) _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType
 			forM (parseJID $ bareTxt to <> fromString "/create") $
 				queryDisco from
 componentStanza db _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to@(JID { jidNode = Just toNode }), iqFrom = Just from, iqPayload = Just p }))
+	| Just idAndResource <- T.stripPrefix (s"CHEOGRAM%query-then-send-ack%") . strResource =<< jidResource to,
+	  Just (messageId, resource) <- readZ $ T.unpack $ unescapeJid idAndResource,
+	  [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p,
+	  Just routeTo <- parseJID (unescapeJid (strNode toNode) ++ if T.null resource then mempty else s"/" ++ resource),
+	  Just fromNode <- jidNode from,
+	  Just routeFrom <- parseJID (strNode fromNode ++ s"@" ++ formatJID componentJid) =
+		let features = mapMaybe (attributeText (fromString "var")) $ isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query in
+		if (s"urn:xmpp:receipts") `elem` features then do
+			log "DISCO RESULT, DO NOT SEND ACK" (from, to, features)
+			return []
+		else do
+			log "DISCO RESULT, NOW SEND ACK" (from, to, routeFrom, routeTo, features)
+			return [mkStanzaRec $ deliveryReceipt messageId routeFrom routeTo]
 	| Just idAndResource <- T.stripPrefix (s"CHEOGRAM%query-then-send-disco-info%") . strResource =<< jidResource to,
 	  Just (iqID, resource) <- readZ $ T.unpack $ unescapeJid idAndResource,
 	  [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p,
