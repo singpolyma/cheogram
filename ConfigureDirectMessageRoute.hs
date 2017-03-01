@@ -21,7 +21,7 @@ import Util
 
 newtype SessionID = SessionID UUID deriving (Ord, Eq, Show)
 
-main :: (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> XMPP.JID -> IO ()) -> IO (XMPP.IQ -> IO XMPP.IQ)
+main :: (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> IO (XMPP.IQ -> IO XMPP.IQ)
 main getRouteJid setRouteJid = do
 	stanzas <- newTQueueIO
 	void $ forkIO $ iterateM_ (\sessions -> do
@@ -37,7 +37,7 @@ main getRouteJid setRouteJid = do
 			atomically $ readTMVar result
 		)
 
-processOneIQ :: (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> XMPP.IQ -> IO (Map SessionID (Session, UTCTime), XMPP.IQ)
+processOneIQ :: (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> XMPP.IQ -> IO (Map SessionID (Session, UTCTime), XMPP.IQ)
 processOneIQ getRouteJid setRouteJid sessions iq@(XMPP.IQ { XMPP.iqID = Just iqID, XMPP.iqFrom = Just from, XMPP.iqPayload = realPayload })
 	| Just sid <- sessionIDFromText . snd =<< T.uncons =<< T.stripPrefix (s"ConfigureDirectMessageRoute") iqID,
           XMPP.iqType iq == XMPP.IQResult || XMPP.iqType iq == XMPP.IQError =
@@ -64,7 +64,7 @@ processOneIQ _ _ sessions iq@(XMPP.IQ { XMPP.iqID = iqID, XMPP.iqFrom = from }) 
 	log "ConfigureDirectMessageRoute.processOneIQ BAD INPUT" iq
 	return (sessions, iqError iqID from "cancel" "feature-not-implemented" Nothing)
 
-lookupAndStepSession :: (XMPP.JID -> XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> Session' (IO (Map SessionID (Session, UTCTime), XMPP.IQ))
+lookupAndStepSession :: (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> Session' (IO (Map SessionID (Session, UTCTime), XMPP.IQ))
 lookupAndStepSession setRouteJid sessions sid iqID from payload
 	| Just (stepSession, _) <- Map.lookup sid sessions =
 		if attributeText (s"{http://jabber.org/protocol/commands}action") payload == Just (s"cancel") then
@@ -87,7 +87,7 @@ lookupAndStepSession setRouteJid sessions sid iqID from payload
 				SessionCancel -> return $! Map.delete sid sessions
 				SessionSaveAndNext userJid gatewayJid s -> do
 					now <- getCurrentTime
-					userJid `setRouteJid` gatewayJid
+					userJid `setRouteJid` (Just gatewayJid)
 					return $! Map.insert sid (s, now) sessions
 				SessionComplete userJid gatewayJid -> do
 					userJid `setRouteJid` gatewayJid
@@ -96,7 +96,7 @@ lookupAndStepSession setRouteJid sessions sid iqID from payload
 		log "ConfigureDirectMessageRoute.processOneIQ NO SESSION FOUND" (sid, iqID, from, payload)
 		return (sessions, iqError (Just iqID) (Just from) "modify" "bad-request" (Just "bad-sessionid"))
 
-data SessionResult = SessionNext Session | SessionCancel | SessionSaveAndNext XMPP.JID XMPP.JID Session | SessionComplete XMPP.JID XMPP.JID
+data SessionResult = SessionNext Session | SessionCancel | SessionSaveAndNext XMPP.JID XMPP.JID Session | SessionComplete XMPP.JID (Maybe XMPP.JID)
 type Session' a = SessionID -> Text -> XMPP.JID -> Element -> a
 type Session = Session' (SessionResult, XMPP.IQ)
 
@@ -111,7 +111,7 @@ stage5 stage4iqID stage4from sid iqID from error
 			XMPP.iqPayload = Just error
 		})
 	| otherwise =
-		(SessionComplete stage4from from, (XMPP.emptyIQ XMPP.IQResult) {
+		(SessionComplete stage4from (Just from), (XMPP.emptyIQ XMPP.IQResult) {
 			XMPP.iqID = Just stage4iqID,
 			XMPP.iqTo = Just stage4from,
 			XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command")
@@ -176,6 +176,25 @@ stage2 sid iqID from command
 			XMPP.iqTo = Just gatewayJid,
 			XMPP.iqFrom = Just sendFrom, -- domain gets rewritten by main cheogram program
 			XMPP.iqPayload = Just $ Element (s"{jabber:iq:register}query") [] []
+		})
+	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
+	  getFormField form (s"gateway-jid") `elem` [Nothing, Just mempty] =
+		(SessionComplete from Nothing, (XMPP.emptyIQ XMPP.IQResult) {
+			XMPP.iqID = Just iqID,
+			XMPP.iqTo = Just from,
+			XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command")
+				[
+					(s"{http://jabber.org/protocol/commands}node", [ContentText nodeName]),
+					(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ sessionIDToText sid]),
+					(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"completed"])
+				]
+				[
+					NodeElement $ Element (s"{http://jabber.org/protocol/commands}note") [
+						(s"{http://jabber.org/protocol/commands}type", [ContentText $ s"info"])
+					] [
+						NodeContent $ ContentText $ s"Direct message route removed."
+					]
+				]
 		})
 	| otherwise = (SessionCancel, iqError (Just iqID) (Just from) "modify" "bad-request" (Just "bad-payload"))
 
