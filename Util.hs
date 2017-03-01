@@ -6,7 +6,10 @@ import Control.Applicative (many)
 
 import Data.Time (getCurrentTime)
 import Data.XML.Types (Element(..), Node(NodeElement), isNamed, elementText, elementChildren, attributeText)
+import Crypto.Random (getSystemDRG, withRandomBytes)
+import Data.ByteString.Base58 (bitcoinAlphabet, encodeBase58)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import qualified Network.Protocol.XMPP as XMPP
 import qualified Data.Attoparsec.Text as Atto
 
@@ -68,3 +71,8 @@ getFormField form var =
 						elementText =<< isNamed (s"{jabber:x:data}value") =<< elementChildren el
 				_ -> Nothing
 		) (elementNodes form)
+
+genToken :: Int -> IO Text
+genToken n = do
+	g <- getSystemDRG
+	return $ fst $ withRandomBytes g n (T.decodeUtf8 . encodeBase58 bitcoinAlphabet)

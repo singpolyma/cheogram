@@ -918,8 +918,8 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread thread)) $ forever $ do
 		stanza <- getStanza
 		log "COMPONENT  IN" stanza
-		liftIO $ case (stanzaFrom $ receivedStanza stanza, stanzaTo $ receivedStanza stanza, mapToBackend backendHost =<< stanzaTo (receivedStanza stanza), fmap strNode . jidNode =<< stanzaTo (receivedStanza stanza)) of
-			(Just from, Just to, _, _)
+		liftIO $ case (stanzaFrom $ receivedStanza stanza, stanzaTo $ receivedStanza stanza, mapToBackend backendHost =<< stanzaTo (receivedStanza stanza), fmap strNode . jidNode =<< stanzaTo (receivedStanza stanza), stanza) of
+			(Just from, Just to, _, _, _)
 				| strDomain (jidDomain from) == backendHost,
 				  to == componentJid ->
 					case stanza of
@@ -930,7 +930,19 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 							  Just cheoJid <- mapToComponent from ->
 								mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
 						_ -> log "backend no match" stanza
-			(Just from, Just to, Nothing, Just localpart)
+			(Just from, Just to, Nothing, Just localpart, ReceivedMessage m)
+				| Just txt <- getBody "jabber:component:accept" m,
+				  T.length txt == 146 -> do -- the length of our token messages
+					log "POSSIBLE TOKEN" (from, to, txt)
+					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
+					when (Just (formatJID from) == fmap fromString maybeRoute || bareTxt from == unescapeJid localpart) $ do
+						maybeToken <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0addtoken")
+						case (fmap (first parseJID) (readZ =<< maybeToken), parseJID $ unescapeJid localpart) of
+							(Just (Just cheoJid, token), Just owner) | (s"CHEOGRAM"++token) == txt -> do
+								log "SET OWNER" (cheoJid, owner)
+								tcPutJID db cheoJid "owner" owner
+							_ -> log "NO TOKEN FOUND, or mismatch" maybeToken
+			(Just from, Just to, Nothing, Just localpart, _)
 				| fmap (((s"CHEOGRAM%") `T.isPrefixOf`) . strResource) (jidResource to) /= Just True -> do
 					let toResourceSuffix = maybe mempty (s"/"++) (strResource <$> jidResource to)
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
@@ -956,7 +968,7 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 								Element (fromString "{jabber:component:accept}error")
 								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
-			(_, _, backendTo, _) ->
+			(_, _, backendTo, _, _) ->
 				mapM_ sendToComponent =<< componentStanza db backendTo toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid stanza
 	where
 	mapToComponent = mapToBackend (formatJID componentJid)
@@ -1030,7 +1042,7 @@ stripCIPrefix prefix str
 	where
 	(prefix', rest) = T.splitAt (T.length $ CI.original prefix) str
 
-data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Debounce Int | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text
+data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Debounce Int | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text | AddJid JID
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentJid
@@ -1041,6 +1053,8 @@ parseCommand txt room nick componentJid
 		)
 	| Just room <- stripCIPrefix (fromString "/join ") txt =
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
+	| Just addjid <- stripCIPrefix (fromString "/addjid ") txt =
+		AddJid <$> parseJID addjid
 	| Just t <- stripCIPrefix (fromString "/create ") txt = Just $ Create t
 	| Just nick <- stripCIPrefix (fromString "/nick ") txt = Just $ SetNick nick
 	| Just input <- stripCIPrefix (fromString "/msg ") txt =
@@ -1278,6 +1292,12 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 						"More info: http://cheogram.com"
 					]
 			]
+		Just (AddJid addjid) -> do
+			token <- genToken 100
+			True <- TC.runTCM $ TC.put db (T.unpack (bareTxt addjid) ++ "\0addtoken") (show (formatJID cheoJid, token))
+			return [
+					mkStanzaRec $ mkSMS componentJid smsJid (s"CHEOGRAM" ++ token)
+				]
 		Nothing -> return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "You sent an invalid message")]
 
 syncCall chan req = do
