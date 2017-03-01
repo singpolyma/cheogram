@@ -223,6 +223,16 @@ deliveryReceipt id from to =
 		]
 	}
 
+iqNotImplemented iq =
+	iq {
+		iqTo = iqFrom iq,
+		iqFrom = iqTo iq,
+		iqType = IQError,
+		iqPayload = Just $ Element (s"{jabber:component:accept}error")
+			[(s"{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
+			[NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
+	}
+
 componentMessage _ componentJid (m@Message { messageType = MessageError }) _ _ _ smsJid body = do
 	log "MESSAGE ERROR"  m
 	return [mkStanzaRec $ m { messageTo = Just smsJid, messageFrom = Just componentJid }]
@@ -848,17 +858,24 @@ componentStanza _ _ _ _ _ _ _ (ReceivedIQ (iq@IQ { iqType = IQGet, iqFrom = Just
 			iqType = IQResult,
 			iqPayload = Nothing
 		}]
-componentStanza _ _ _ _ _ _ _ (ReceivedIQ (iq@IQ { iqType = typ }))
+componentStanza db maybeSmsJid _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = typ, iqFrom = Just from }))
+	| typ `elem` [IQGet, IQSet],
+	  Just smsJid <- maybeSmsJid,
+	  Just _ <- jidNode =<< iqTo iq = do
+		let resourceSuffix = maybe mempty (s"/"++) $ fmap strResource (jidResource from)
+		maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
+		case (fmap fromString maybeRoute, parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
+			(Just route, Just routeFrom) -> do
+				log "IQ ROUTE" route
+				return [mkStanzaRec $ iq {
+					iqFrom = Just routeFrom,
+					iqTo = parseJID $ (fromMaybe mempty $ strNode <$> jidNode smsJid) ++ s"@" ++ route
+				}]
+			_ ->
+				return [mkStanzaRec $ iqNotImplemented iq]
 	| typ `elem` [IQGet, IQSet] = do
 		log "REPLY WITH IQ ERROR" iq
-		return [mkStanzaRec $ iq {
-			iqTo = iqFrom iq,
-			iqFrom = iqTo iq,
-			iqType = IQError,
-			iqPayload = Just $ Element (fromString "{jabber:component:accept}error")
-				[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
-				[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
-		}]
+		return [mkStanzaRec $ iqNotImplemented iq]
 componentStanza _ _ _ _ _ _ _ s = do
 	log "UNKNOWN STANZA" s
 	return []
