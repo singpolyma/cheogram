@@ -67,33 +67,49 @@ processOneIQ _ _ sessions iq@(XMPP.IQ { XMPP.iqID = iqID, XMPP.iqFrom = from }) 
 lookupAndStepSession :: (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> Session' (IO (Map SessionID (Session, UTCTime), XMPP.IQ))
 lookupAndStepSession setRouteJid sessions sid iqID from payload
 	| Just (stepSession, _) <- Map.lookup sid sessions =
-		if attributeText (s"{http://jabber.org/protocol/commands}action") payload == Just (s"cancel") then
-			return (Map.delete sid sessions, (XMPP.emptyIQ XMPP.IQResult) {
-				XMPP.iqID = Just iqID,
-				XMPP.iqTo = Just from,
-				XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command")
-					[
-						(s"{http://jabber.org/protocol/commands}node", [ContentText nodeName]),
-						(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ sessionIDToText sid]),
-						(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"cancelled"])
-					] []
-			})
-		else
-			let (session', iq) = stepSession sid iqID from payload in
-			fmap (flip (,) iq) $ case session' of
-				SessionNext s -> do
-					now <- getCurrentTime
-					return $! Map.insert sid (s, now) sessions
-				SessionCancel -> return $! Map.delete sid sessions
-				SessionSaveAndNext userJid gatewayJid s -> do
-					now <- getCurrentTime
-					userJid `setRouteJid` Nothing -- clear old route
-					userJid `setRouteJid` (Just gatewayJid)
-					return $! Map.insert sid (s, now) sessions
-				SessionComplete userJid gatewayJid -> do
-					when (isJust gatewayJid) $ userJid `setRouteJid` Nothing -- clear old route
-					userJid `setRouteJid` gatewayJid
-					return $! Map.delete sid sessions
+		case attributeText (s"action") payload of
+			Just action | action == s"cancel" ->
+				return (Map.delete sid sessions, (XMPP.emptyIQ XMPP.IQResult) {
+					XMPP.iqID = Just iqID,
+					XMPP.iqTo = Just from,
+					XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command")
+						[
+							(s"{http://jabber.org/protocol/commands}node", [ContentText nodeName]),
+							(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ sessionIDToText sid]),
+							(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"cancelled"])
+						] []
+				})
+			Just action | action == s"complete" ->
+				return (Map.delete sid sessions, (XMPP.emptyIQ XMPP.IQResult) {
+					XMPP.iqID = Just iqID,
+					XMPP.iqTo = Just from,
+					XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command")
+						[
+							(s"{http://jabber.org/protocol/commands}node", [ContentText nodeName]),
+							(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ sessionIDToText sid]),
+							(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"completed"])
+						] [
+							NodeElement $ Element (s"{http://jabber.org/protocol/commands}note") [
+								(s"{http://jabber.org/protocol/commands}type", [ContentText $ s"info"])
+							] [
+								NodeContent $ ContentText $ s"Saved route configuration."
+							]
+						]
+				})
+			_ ->
+				let (session', iq) = stepSession sid iqID from payload in
+				fmap (flip (,) iq) $ case session' of
+					SessionNext s -> do
+						now <- getCurrentTime
+						return $! Map.insert sid (s, now) sessions
+					SessionCancel -> return $! Map.delete sid sessions
+					SessionSaveAndNext userJid gatewayJid s -> do
+						now <- getCurrentTime
+						userJid `setRouteJid` (Just gatewayJid)
+						return $! Map.insert sid (s, now) sessions
+					SessionComplete userJid gatewayJid -> do
+						userJid `setRouteJid` gatewayJid
+						return $! Map.delete sid sessions
 	| otherwise = do
 		log "ConfigureDirectMessageRoute.processOneIQ NO SESSION FOUND" (sid, iqID, from, payload)
 		return (sessions, iqError (Just iqID) (Just from) "modify" "bad-request" (Just "bad-sessionid"))
@@ -157,15 +173,16 @@ stage3 stage2iqID stage2from sid iqID from query
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query = processForm DataForm form
 	| otherwise = processForm LegacyRegistration (convertQueryToForm query)
 	where
+	registered = not $ null $ isNamed (fromString "{jabber:iq:register}registered") =<< elementChildren query
 	sessionNext
-		| [_] <- isNamed (fromString "{jabber:iq:register}registered") =<< elementChildren query =
+		| registered =
 			SessionSaveAndNext stage2from from
 		| otherwise = SessionNext
 	processForm typ form =
 		(sessionNext $ stage4 typ from, (XMPP.emptyIQ XMPP.IQResult) {
 			XMPP.iqID = Just stage2iqID,
 			XMPP.iqTo = Just stage2from,
-			XMPP.iqPayload = Just $ commandStage sid form
+			XMPP.iqPayload = Just $ commandStage sid registered form
 		})
 
 stage2 :: Session
@@ -204,7 +221,7 @@ stage1 :: Maybe XMPP.JID -> XMPP.JID -> Text -> SessionID -> XMPP.IQ
 stage1 existingRoute iqTo iqID sid = (XMPP.emptyIQ XMPP.IQResult) {
 	XMPP.iqTo = Just iqTo,
 	XMPP.iqID = Just iqID,
-	XMPP.iqPayload = Just $ commandStage sid $
+	XMPP.iqPayload = Just $ commandStage sid False $
 		Element (fromString "{jabber:x:data}x") [
 			(fromString "{jabber:x:data}type", [ContentText $ s"form"])
 		] [
@@ -222,21 +239,32 @@ stage1 existingRoute iqTo iqID sid = (XMPP.emptyIQ XMPP.IQResult) {
 		]
 }
 
-commandStage :: SessionID -> Element -> Element
-commandStage sid el = Element (s"{http://jabber.org/protocol/commands}command")
+commandStage :: SessionID -> Bool -> Element -> Element
+commandStage sid allowComplete el = Element (s"{http://jabber.org/protocol/commands}command")
 	[
 		(s"{http://jabber.org/protocol/commands}node", [ContentText nodeName]),
 		(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ sessionIDToText sid]),
 		(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"executing"])
 	]
 	[
-		NodeElement $ Element (s"{http://jabber.org/protocol/commands}actions") [
-			(s"{http://jabber.org/protocol/commands}execute", [ContentText $ s"next"])
-		] [
-			NodeElement $ Element (s"{http://jabber.org/protocol/commands}next") [] []
-		],
+		NodeElement actions,
 		NodeElement el
 	]
+	where
+	actions
+		| allowComplete =
+			Element (s"{http://jabber.org/protocol/commands}actions") [
+				(s"{http://jabber.org/protocol/commands}execute", [ContentText $ s"complete"])
+			] [
+				NodeElement $ Element (s"{http://jabber.org/protocol/commands}next") [] [],
+				NodeElement $ Element (s"{http://jabber.org/protocol/commands}complete") [] []
+			]
+		| otherwise =
+			Element (s"{http://jabber.org/protocol/commands}actions") [
+				(s"{http://jabber.org/protocol/commands}execute", [ContentText $ s"next"])
+			] [
+				NodeElement $ Element (s"{http://jabber.org/protocol/commands}next") [] []
+			]
 
 newSession :: IO (SessionID, Session)
 newSession = UUID.nextUUID >>= go

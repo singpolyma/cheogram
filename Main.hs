@@ -233,6 +233,17 @@ iqNotImplemented iq =
 			[NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
 	}
 
+unregisterDirectMessageRoute componentJid userJid route = do
+	uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
+	return $ (emptyIQ IQSet) {
+			iqTo = Just route,
+			iqFrom = parseJID $ escapeJid (bareTxt userJid) ++ s"@" ++ formatJID componentJid ++ s"/CHEOGRAM%removed",
+			iqID = uuid,
+			iqPayload = Just $ Element (s"{jabber:iq:register}query") [] [
+				NodeElement $ Element (s"{jabber:iq:register}remove") [] []
+			]
+		}
+
 componentMessage _ componentJid (m@Message { messageType = MessageError }) _ _ _ smsJid body = do
 	log "MESSAGE ERROR"  m
 	return [mkStanzaRec $ m { messageTo = Just smsJid, messageFrom = Just componentJid }]
@@ -1489,21 +1500,17 @@ main = do
 					log "SETTING DIRECT MESSAGE ROUTE" (userJid, mgatewayJid)
 					case mgatewayJid of
 						Just gatewayJid -> do
+							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
+							forM_ maybeExistingRoute $ \existingRoute -> do
+								atomically . writeTChan sendToComponent . mkStanzaRec <$> unregisterDirectMessageRoute componentJid userJid existingRoute
+
 							True <- TC.runTCM $ TC.put db (T.unpack (bareTxt userJid) ++ "\0direct-message-route") (T.unpack $ formatJID gatewayJid)
 							return ()
 						Nothing -> do
 							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
 							TC.runTCM $ TC.out db (T.unpack (bareTxt userJid) ++ "\0direct-message-route")
 							forM_ maybeExistingRoute $ \existingRoute -> do
-								uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
-								atomically $ writeTChan sendToComponent $ mkStanzaRec $ (emptyIQ IQSet) {
-										iqTo = Just existingRoute,
-										iqFrom = parseJID $ escapeJid (bareTxt userJid) ++ s"@" ++ formatJID componentJid ++ s"/CHEOGRAM%removed",
-										iqID = uuid,
-										iqPayload = Just $ Element (s"{jabber:iq:register}query") [] [
-											NodeElement $ Element (s"{jabber:iq:register}remove") [] []
-										]
-									}
+								atomically . writeTChan sendToComponent . mkStanzaRec <$> unregisterDirectMessageRoute componentJid userJid existingRoute
 				)
 
 			forever $ do
