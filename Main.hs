@@ -1501,16 +1501,17 @@ main = do
 					case mgatewayJid of
 						Just gatewayJid -> do
 							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
-							forM_ maybeExistingRoute $ \existingRoute -> do
-								atomically . writeTChan sendToComponent . mkStanzaRec <$> unregisterDirectMessageRoute componentJid userJid existingRoute
+							forM_ maybeExistingRoute $ \existingRoute ->
+								when (existingRoute /= gatewayJid)
+									(atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute componentJid userJid existingRoute)
 
 							True <- TC.runTCM $ TC.put db (T.unpack (bareTxt userJid) ++ "\0direct-message-route") (T.unpack $ formatJID gatewayJid)
 							return ()
 						Nothing -> do
 							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
 							TC.runTCM $ TC.out db (T.unpack (bareTxt userJid) ++ "\0direct-message-route")
-							forM_ maybeExistingRoute $ \existingRoute -> do
-								atomically . writeTChan sendToComponent . mkStanzaRec <$> unregisterDirectMessageRoute componentJid userJid existingRoute
+							forM_ maybeExistingRoute $ \existingRoute ->
+								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute componentJid userJid existingRoute
 				)
 
 			forever $ do
