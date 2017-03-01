@@ -932,7 +932,7 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 						_ -> log "backend no match" stanza
 			(Just from, Just to, Nothing, Just localpart, ReceivedMessage m)
 				| Just txt <- getBody "jabber:component:accept" m,
-				  T.length txt == 146 -> do -- the length of our token messages
+				  T.length txt == 145 && (s"CHEOGRAM") `T.isPrefixOf` txt -> do -- the length of our token messages
 					log "POSSIBLE TOKEN" (from, to, txt)
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
 					when (Just (formatJID from) == fmap fromString maybeRoute || bareTxt from == unescapeJid localpart) $ do
