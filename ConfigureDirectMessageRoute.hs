@@ -87,9 +87,11 @@ lookupAndStepSession setRouteJid sessions sid iqID from payload
 				SessionCancel -> return $! Map.delete sid sessions
 				SessionSaveAndNext userJid gatewayJid s -> do
 					now <- getCurrentTime
+					userJid `setRouteJid` Nothing -- clear old route
 					userJid `setRouteJid` (Just gatewayJid)
 					return $! Map.insert sid (s, now) sessions
 				SessionComplete userJid gatewayJid -> do
+					when (isJust gatewayJid) $ userJid `setRouteJid` Nothing -- clear old route
 					userJid `setRouteJid` gatewayJid
 					return $! Map.delete sid sessions
 	| otherwise = do

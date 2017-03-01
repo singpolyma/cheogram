@@ -1493,7 +1493,7 @@ main = do
 							return ()
 						Nothing -> do
 							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
-							True <- TC.runTCM $ TC.out db (T.unpack (bareTxt userJid) ++ "\0direct-message-route")
+							TC.runTCM $ TC.out db (T.unpack (bareTxt userJid) ++ "\0direct-message-route")
 							forM_ maybeExistingRoute $ \existingRoute -> do
 								uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
 								atomically $ writeTChan sendToComponent $ mkStanzaRec $ (emptyIQ IQSet) {
