@@ -942,7 +942,7 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 				  T.length txt == 145 && (s"CHEOGRAM") `T.isPrefixOf` txt -> do -- the length of our token messages
 					log "POSSIBLE TOKEN" (from, to, txt)
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
-					when (Just (formatJID from) == fmap fromString maybeRoute || bareTxt from == unescapeJid localpart) $ do
+					when (Just (strDomain $ jidDomain from) == fmap fromString maybeRoute || bareTxt from == unescapeJid localpart) $ do
 						maybeToken <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0addtoken")
 						case (fmap (first parseJID) (readZ =<< maybeToken), parseJID $ unescapeJid localpart) of
 							(Just (Just cheoJid, token), Just owner) | (s"CHEOGRAM"++token) == txt -> do
