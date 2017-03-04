@@ -947,7 +947,13 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 						case (fmap (first parseJID) (readZ =<< maybeToken), parseJID $ unescapeJid localpart) of
 							(Just (Just cheoJid, token), Just owner) | (s"CHEOGRAM"++token) == txt -> do
 								log "SET OWNER" (cheoJid, owner)
-								tcPutJID db cheoJid "owner" owner
+
+								True <- TC.runTCM (TC.put db (T.unpack (bareTxt owner) ++ "\0cheoJid") (T.unpack $ formatJID cheoJid))
+
+								owners <- (fromMaybe [] . (readZ =<<)) <$>
+									maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "owners")
+								tcPut db cheoJid "owners" (show $ (T.unpack $ bareTxt owner) : owners)
+
 							_ -> log "NO TOKEN FOUND, or mismatch" maybeToken
 			(Just from, Just to, Nothing, Just localpart, _)
 				| fmap (((s"CHEOGRAM%") `T.isPrefixOf`) . strResource) (jidResource to) /= Just True -> do
