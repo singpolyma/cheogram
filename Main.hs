@@ -672,7 +672,7 @@ componentStanza db _ _ _ _ _ componentJid (ReceivedIQ iq@(IQ { iqFrom = Just _, 
 	| iqType iq `elem` [IQGet, IQSet],
 	  [query] <- isNamed (fromString "{jabber:iq:register}query") p = do
 		log "LOOKS LIKE REGISTRATION" iq
-		handleRegister db componentJid iq query
+		return [mkStanzaRec $ iqNotImplemented iq]
 componentStanza _ _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
