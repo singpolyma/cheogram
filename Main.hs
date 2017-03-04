@@ -1534,9 +1534,10 @@ main = do
 			void $ runComponent (Server componentJid host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) $ do
 				mapM_ putStanza =<< registerToGateway componentJid gatewayJid (fromString did) (fromString password)
 				liftIO $ threadDelay 1000000
-		(name:host:port:secret:backendHost:conferences) -> do
+		(name:host:port:secret:backendHost:rawdid:conferences) -> do
 			log "" "Starting..."
 			let Just componentJid = parseJID (fromString name)
+			let Just did = normalizeTel (fromString rawdid)
 			db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
 			toJoinPartDebouncer <- atomically newTChan
 			sendToComponent <- atomically newTChan
@@ -1563,6 +1564,12 @@ main = do
 									(atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid existingRoute)
 
 							True <- TC.runTCM $ TC.put db (T.unpack (bareTxt userJid) ++ "\0direct-message-route") (T.unpack $ formatJID gatewayJid)
+
+							forM_ (parseJID $ escapeJid (bareTxt userJid) ++ s"@" ++ formatJID componentJid) $ \from ->
+								forM_ (parseJID $ did ++ s"@" ++ formatJID gatewayJid) $ \to ->
+									atomically $ writeTChan sendToComponent $ mkStanzaRec $
+										mkSMS from to (s"/addjid " ++ bareTxt userJid)
+
 							return ()
 						Nothing -> do
 							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
