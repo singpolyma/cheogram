@@ -876,8 +876,7 @@ componentStanza _ _ _ _ _ _ _ (ReceivedIQ (iq@IQ { iqType = IQGet, iqFrom = Just
 			iqPayload = Nothing
 		}]
 componentStanza db maybeSmsJid _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = typ, iqFrom = Just from }))
-	| typ `elem` [IQGet, IQSet],
-	  Just smsJid <- maybeSmsJid,
+	| Just smsJid <- maybeSmsJid,
 	  Just _ <- jidNode =<< iqTo iq = do
 		let resourceSuffix = maybe mempty (s"/"++) $ fmap strResource (jidResource from)
 		maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
@@ -888,8 +887,10 @@ componentStanza db maybeSmsJid _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType 
 					iqFrom = Just routeFrom,
 					iqTo = parseJID $ (fromMaybe mempty $ strNode <$> jidNode smsJid) ++ s"@" ++ route
 				}]
-			_ ->
+			_ | typ `elem` [IQGet, IQSet] -> do
+				log "REPLY WITH IQ ERROR (no route)" iq
 				return [mkStanzaRec $ iqNotImplemented iq]
+			_ -> log "IGNORE BOGUS REPLY (no route)" iq >> return []
 	| typ `elem` [IQGet, IQSet] = do
 		log "REPLY WITH IQ ERROR" iq
 		return [mkStanzaRec $ iqNotImplemented iq]
