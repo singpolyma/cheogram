@@ -244,9 +244,24 @@ unregisterDirectMessageRoute componentJid userJid route = do
 			]
 		}
 
-componentMessage _ componentJid (m@Message { messageType = MessageError }) _ _ _ smsJid body = do
+toRouteOrFallback db componentJid bareFrom resourceFrom smsJid m fallback = do
+	maybeRoute <- TC.runTCM $ TC.get db (T.unpack bareFrom ++ "\0direct-message-route")
+	case (fmap fromString maybeRoute, parseJID $ escapeJid bareFrom ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
+		(Just route, Just routeFrom) -> do
+			log "TO DIRECT ROUTE" route
+			return [mkStanzaRec $ m {
+				messageFrom = Just routeFrom,
+				messageTo = parseJID $ (fromMaybe mempty $ strNode <$> jidNode smsJid) ++ s"@" ++ route
+			}]
+		_ -> fallback
+	where
+	resourceSuffix = maybe mempty (s"/"++) resourceFrom
+
+componentMessage db componentJid (m@Message { messageType = MessageError }) _ bareFrom resourceFrom smsJid body = do
 	log "MESSAGE ERROR"  m
-	return [mkStanzaRec $ m { messageTo = Just smsJid, messageFrom = Just componentJid }]
+	toRouteOrFallback db componentJid bareFrom resourceFrom smsJid m $ do
+		log "DIRECT FROM GATEWAY" smsJid
+		return [mkStanzaRec $ m { messageTo = Just smsJid, messageFrom = Just componentJid }]
 componentMessage db componentJid m@(Message { messageTo = Just to }) existingRoom _ _ smsJid _
 	| Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
 		log "GOT INVITE" (invite, m)
@@ -288,21 +303,12 @@ componentMessage db componentJid m@(Message { messageFrom = Just from, messageTo
 				(deliveryReceipt (fromMaybe mempty $ messageID m) to from)
 		[] -> return []
 
-	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-	fmap (++ack) $ case (fmap fromString maybeRoute, parseJID $ escapeJid bareFrom ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
-		(Just route, Just routeFrom) -> do
-			log "WHISPER ROUTE" route
-			return [mkStanzaRec $ m {
-				messageFrom = Just routeFrom,
-				messageTo = parseJID $ (fromMaybe mempty $ strNode <$> jidNode smsJid) ++ s"@" ++ route
-			}]
-		_ -> do
-			nick <- nickFor db from existingRoom
-			let txt = mconcat [fromString "(", nick, fromString " whispers) ", body]
-			return [mkStanzaRec $ mkSMS componentJid smsJid txt]
+	fmap (++ack) $ toRouteOrFallback db componentJid bareFrom resourceFrom smsJid m $ do
+		nick <- nickFor db from existingRoom
+		let txt = mconcat [fromString "(", nick, fromString " whispers) ", body]
+		return [mkStanzaRec $ mkSMS componentJid smsJid txt]
 	where
 	extra = T.unpack $ escapeJid $ T.pack $ show (fromMaybe mempty (messageID m), fromMaybe mempty resourceFrom)
-	resourceSuffix = maybe mempty (s"/"++) resourceFrom
 componentMessage _ _ m _ _ _ _ _ = do
 	log "UNKNOWN MESSAGE" m
 	return []
