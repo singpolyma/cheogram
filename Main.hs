@@ -240,7 +240,7 @@ unregisterDirectMessageRoute db componentJid userJid route = do
 
 		owners <- (fromMaybe [] . (readZ =<<)) <$>
 			maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "owners")
-		tcPut db cheoJid "owners" (show $ (filter (/= bareTxt cheoJid)) owners)
+		tcPut db cheoJid "owners" (show $ (filter (/= bareTxt userJid)) owners)
 
 	uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
 	return $ (emptyIQ IQSet) {
@@ -1063,7 +1063,7 @@ stripCIPrefix prefix str
 	where
 	(prefix', rest) = T.splitAt (T.length $ CI.original prefix) str
 
-data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Debounce Int | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text | AddJid JID
+data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Debounce Int | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text | AddJid JID | DelJid JID | Jids
 	deriving (Show, Eq)
 
 parseCommand txt room nick componentJid
@@ -1076,6 +1076,9 @@ parseCommand txt room nick componentJid
 		Join <$> (parseJID (room <> fromString "/" <> nick) <|> parseJID room)
 	| Just addjid <- stripCIPrefix (fromString "/addjid ") txt =
 		AddJid <$> parseJID addjid
+	| Just deljid <- stripCIPrefix (fromString "/deljid ") txt =
+		DelJid <$> parseJID deljid
+	| citxt == fromString "/jids" = Just Jids
 	| Just t <- stripCIPrefix (fromString "/create ") txt = Just $ Create t
 	| Just nick <- stripCIPrefix (fromString "/nick ") txt = Just $ SetNick nick
 	| Just input <- stripCIPrefix (fromString "/msg ") txt =
@@ -1319,6 +1322,19 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 			return [
 					mkStanzaRec $ mkSMS componentJid smsJid (s"CHEOGRAM" ++ token)
 				]
+		Just (DelJid deljid) -> do
+			-- Deleting a JID is much less dangerous since in the worst case SMS just go to the actual phone number
+			TC.runTCM $ TC.out db (T.unpack (bareTxt deljid) ++ "\0cheoJid")
+
+			owners <- (fromMaybe [] . (readZ =<<)) <$>
+				maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "owners")
+			tcPut db cheoJid "owners" (show $ (filter (/= bareTxt deljid)) owners)
+
+			return [mkStanzaRec $ mkSMS componentJid smsJid (bareTxt deljid ++ s" removed from your phone number")]
+		Just Jids -> do
+			owners <- (fromMaybe [] . (readZ =<<)) <$>
+				maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "owners")
+			return [mkStanzaRec $ mkSMS componentJid smsJid $ fromString $ "JIDs owning this phone number:\n" <> intercalate "\n" owners]
 		Nothing -> return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "You sent an invalid message")]
 
 syncCall chan req = do
