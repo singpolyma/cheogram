@@ -233,7 +233,15 @@ iqNotImplemented iq =
 			[NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
 	}
 
-unregisterDirectMessageRoute componentJid userJid route = do
+unregisterDirectMessageRoute db componentJid userJid route = do
+	maybeCheoJid <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0cheoJid"))
+	forM_ maybeCheoJid $ \cheoJid -> do
+		TC.runTCM $ TC.out db (T.unpack (bareTxt userJid) ++ "\0cheoJid")
+
+		owners <- (fromMaybe [] . (readZ =<<)) <$>
+			maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "owners")
+		tcPut db cheoJid "owners" (show $ (filter (/= bareTxt cheoJid)) owners)
+
 	uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
 	return $ (emptyIQ IQSet) {
 			iqTo = Just route,
@@ -1536,7 +1544,7 @@ main = do
 							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
 							forM_ maybeExistingRoute $ \existingRoute ->
 								when (existingRoute /= gatewayJid)
-									(atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute componentJid userJid existingRoute)
+									(atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid existingRoute)
 
 							True <- TC.runTCM $ TC.put db (T.unpack (bareTxt userJid) ++ "\0direct-message-route") (T.unpack $ formatJID gatewayJid)
 							return ()
@@ -1544,7 +1552,7 @@ main = do
 							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
 							TC.runTCM $ TC.out db (T.unpack (bareTxt userJid) ++ "\0direct-message-route")
 							forM_ maybeExistingRoute $ \existingRoute ->
-								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute componentJid userJid existingRoute
+								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid existingRoute
 				)
 
 			forever $ do
