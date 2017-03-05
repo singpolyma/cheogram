@@ -1067,17 +1067,22 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 	receivedStanza (ReceivedPresence p) = mkStanzaRec p
 	receivedStanza (ReceivedIQ iq) = mkStanzaRec iq
 
-mapToBackend backendHost jid
-	| Just localpart <- strNode <$> jidNode jid,
-	  Just ('+', tel) <- T.uncons localpart,
-	  T.all isDigit tel = parseJID (localpart <> fromString "@" <> backendHost)
+mapToBackend backendHost (JID { jidNode = Just node })
+	| Just ('+', tel) <- T.uncons localpart,
+	  T.all isDigit tel = result
+	| Just _ <- parsePhoneContext localpart = result
 	| otherwise = Nothing
+	where
+	result = parseJID (localpart ++ s"@" ++ backendHost)
+	localpart = strNode node
+mapToBackend _ _ = Nothing
 
 normalizeTel fullTel
 	| Just ('+',e164) <- T.uncons fullTel,
 	  T.all isDigit e164 = Just fullTel
 	| T.length tel == 10 = Just (s"+1" ++ tel)
 	| T.length tel == 11, s"1" `T.isPrefixOf` tel = Just (T.cons '+' tel)
+	| T.length tel == 5 || T.length tel == 6 = Just (tel ++ s";phone-context=ca-us.phone-context.soprani.ca")
 	| otherwise = Nothing
 	where
 	tel = T.filter isDigit fullTel

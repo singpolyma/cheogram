@@ -2,8 +2,9 @@ module Util where
 
 import Prelude ()
 import BasicPrelude
+import Data.Char (isDigit)
 import Control.Applicative (many)
-
+import Control.Error (hush)
 import Data.Time (getCurrentTime)
 import Data.XML.Types (Element(..), Node(NodeElement), isNamed, elementText, elementChildren, attributeText)
 import Crypto.Random (getSystemDRG, withRandomBytes)
@@ -56,6 +57,12 @@ unescapeJid txt = fromString result
 	unescapes = map (\(str, c) -> Atto.string (fromString str) *> pure c) [
 			("20", ' '), ("22", '"'), ("26", '&'), ("27", '\''), ("2f", '/'), ("3a", ':'), ("3c", '<'), ("3e", '>'), ("40", '@'), ("5c", '\\')
 		]
+
+parsePhoneContext :: Text -> Maybe (Text, Text)
+parsePhoneContext txt = hush $ Atto.parseOnly (
+		(,) <$> Atto.takeWhile isDigit <* Atto.string (s";phone-context=") <*> Atto.takeTill (Atto.inClass " ;")
+		<* Atto.endOfInput
+	) txt
 
 bareTxt (XMPP.JID (Just node) domain _) = mconcat [XMPP.strNode node, s"@", XMPP.strDomain domain]
 bareTxt (XMPP.JID Nothing domain _) = XMPP.strDomain domain
