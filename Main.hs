@@ -153,8 +153,8 @@ cheogramAvailable from to =
 			Element (s"{http://jabber.org/protocol/caps}c") [
 				(s"{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
 				(s"{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:cheogram.com"]),
-				-- gateway/sms//Cheogram<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<
-				(s"{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "QEUi902gYi/nDHreMi6vQ6h9HW0="])
+				-- gateway/sms//Cheogram<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<vcard-temp<
+				(s"{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "XCOs6r/FNTOQJwgYkKOjkktq8XI="])
 			] []
 		]
 	}
@@ -163,7 +163,8 @@ telDiscoFeatures = [
 		s"http://jabber.org/protocol/muc",
 		s"jabber:x:conference",
 		s"urn:xmpp:ping",
-		s"urn:xmpp:receipts"
+		s"urn:xmpp:receipts",
+		s"vcard-temp"
 	]
 
 telCapsStr extraVars =
@@ -696,6 +697,9 @@ componentStanza _ _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQGet, iqFro
 					] [],
 					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
 						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "urn:xmpp:ping"])
+					] [],
+					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "vcard-temp"])
 					] []
 				]
 		}]
@@ -717,12 +721,41 @@ componentStanza _ _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQGet, iqFro
 					] []
 				]
 		}]
+	| Nothing <- jidNode to,
+	  [_] <- isNamed (s"{vcard-temp}vCard") p =
+		return [mkStanzaRec $ (emptyIQ IQResult) {
+			iqTo = Just from,
+			iqFrom = Just to,
+			iqID = id,
+			iqPayload = Just $ Element (s"{vcard-temp}vCard") []
+				[
+					NodeElement $ Element (s"{vcard-temp}URL") [] [NodeContent $ ContentText $ s"https://cheogram.com"],
+					NodeElement $ Element (s"{vcard-temp}DESC") [] [NodeContent $ ContentText $ s"Cheogram provides stable JIDs for PSTN identifiers, with routing through many possible backends.\n\n© Stephen Paul Weber, licensed under AGPLv3+.\n\nSource code for this gateway is available from the listed homepage.\n\nPart of the Soprani.ca project."]
+				]
+		}]
 componentStanza db (Just smsJid) _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = Just id, iqPayload = Just p }))
 	| Just _ <- jidNode to,
 	  [_] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		log "DISCO ON USER" (from, to, p)
 		routeDiscoOrReply db componentJid from smsJid ("CHEOGRAM%query-then-send-disco-info%" ++ extra) $
 			telDiscoInfo id to from []
+	| Just tel <- strNode <$> jidNode to,
+	  [_] <- isNamed (s"{vcard-temp}vCard") p = do
+		owners <- (fromMaybe [] . (readZ =<<)) <$>
+			maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey smsJid "owners")
+		return [mkStanzaRec $ (emptyIQ IQResult) {
+			iqTo = Just from,
+			iqFrom = Just to,
+			iqID = Just id,
+			iqPayload = Just $ Element (s"{vcard-temp}vCard") [] (
+					[
+						NodeElement $ Element (s"{vcard-temp}TEL") [] [
+							NodeElement $ Element (s"{vcard-temp}NUMBER") [] [NodeContent $ ContentText tel]
+						]
+					] ++
+					map (\owner -> NodeElement (Element (s"{vcard-temp}JABBERID") [] [NodeContent $ ContentText owner])) owners
+				)
+		}]
 	where
 	extra = T.unpack $ escapeJid $ T.pack $ show (id, fromMaybe mempty resourceFrom)
 	resourceFrom = strResource <$> jidResource from
