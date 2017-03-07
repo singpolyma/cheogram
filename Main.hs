@@ -674,7 +674,20 @@ componentStanza _ _ registrationJids _ _ _ processDirectMessageRouteConfig compo
 				iqPayload = Just payload
 			}
 		let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
-		return [mkStanzaRec $ replyIQ {
+
+		let subscribe = if attributeText (s"action") payload /= Just (s"complete") then [] else [
+				mkStanzaRec $ (emptyPresence PresenceSubscribe) {
+					presenceTo = Just asFrom,
+					presenceFrom = Just componentJid,
+					presencePayloads = [
+						Element (s"{jabber:component:accept}status") [] [
+							NodeContent $ ContentText $ s"Welcome to Cheogram! You are now configured to send SMS by sending messages to +1<phone-number>@cheogram.com JIDs."
+						]
+					]
+				}
+			]
+
+		return $ subscribe ++ [mkStanzaRec $ replyIQ {
 			iqTo = if iqTo replyIQ == Just asFrom then Just from else iqTo replyIQ,
 			iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
 		}]
