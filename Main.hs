@@ -689,6 +689,17 @@ componentStanza _ _ registrationJids _ _ _ processDirectMessageRouteConfig compo
 
 		return $ subscribe ++ [mkStanzaRec $ replyIQ {
 			iqTo = if iqTo replyIQ == Just asFrom then Just from else iqTo replyIQ,
+			iqID = if iqType replyIQ == IQResult then iqID replyIQ else Just $ fromString $ show (formatJID from, formatJID asFrom, iqID replyIQ),
+			iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
+		}]
+componentStanza _ _ _ _ _ _ processDirectMessageRouteConfig componentJid (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = payload }))
+	| fmap strResource (jidResource to) == Just (s"CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName),
+	  Just (fwdBy, onBehalf, iqId) <- readZ . T.unpack =<< iqID iq = do
+		log "FWD BY" (fwdBy, onBehalf, iqId, iq)
+		replyIQ <- processDirectMessageRouteConfig (iq { iqID = iqId })
+		let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
+		return [mkStanzaRec $ replyIQ {
+			iqTo = if fmap bareTxt (iqTo replyIQ) == Just onBehalf then parseJID fwdBy else iqTo replyIQ,
 			iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
 		}]
 componentStanza _ _ _ _ _ _ processDirectMessageRouteConfig componentJid (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = payload }))
