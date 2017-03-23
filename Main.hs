@@ -1435,7 +1435,12 @@ rejoinManager db sendToComponent componentJid toRoomPresences toRejoinManager =
 	next mempty
 	where
 	mkMucJid muc nick = parseJID $ bareTxt muc <> fromString "/" <> nick
-	ourJids muc (x,y) = (,) <$> mkMucJid muc x <*> (parseJID =<< y)
+	ourJids muc (x,y)
+		| Just (JID { jidDomain = d }) <- yJid,
+		  strDomain d /= fromString componentJid = Nothing
+		| otherwise = (,) <$> mkMucJid muc x <*> yJid
+		where
+		yJid = parseJID =<< y
 
 	next state = atomically (readTChan toRejoinManager) >>= go state
 
