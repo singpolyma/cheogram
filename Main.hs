@@ -596,6 +596,9 @@ handleRegister _ _ iq _ = do
 	log "HANDLEREGISTER UNKNOWN" iq
 	return []
 
+componentStanza db Nothing _ _ _ _ _ componentJid (ReceivedMessage (m@Message { messageTo = Just (JID { jidNode = Nothing }), messageFrom = Just from})) = return [
+		mkStanzaRec $ mkSMS componentJid from (s"Instead of sending messages to " ++ formatJID componentJid ++ s" directly, you can SMS your contacts by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs.  Or, for support, come talk to us in xmpp:discuss@conference.soprani.ca?join")
+	]
 componentStanza _ _ _ _ _ _ _ _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
 	  not $ null $ code "104" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
@@ -681,7 +684,7 @@ componentStanza _ _ registrationJids _ _ _ processDirectMessageRouteConfig compo
 					presenceFrom = Just componentJid,
 					presencePayloads = [
 						Element (s"{jabber:component:accept}status") [] [
-							NodeContent $ ContentText $ s"Welcome to Cheogram! You are now configured to send SMS by sending messages to +1<phone-number>@cheogram.com JIDs."
+							NodeContent $ ContentText $ s"Add this contact and then you can SMS by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s"Jabber IDs."
 						]
 					]
 				}
