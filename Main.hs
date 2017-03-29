@@ -1402,9 +1402,9 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 		Just (AddJid addjid) -> do
 			token <- genToken 100
 			True <- TC.runTCM $ TC.put db (T.unpack (bareTxt addjid) ++ "\0addtoken") (show (formatJID cheoJid, token))
-			return [
-					mkStanzaRec $ mkSMS componentJid smsJid (s"CHEOGRAM" ++ token)
-				]
+			return $ case parseJID (formatJID componentJid ++ s"/token") of
+				Just sendFrom -> [mkStanzaRec $ mkSMS sendFrom smsJid (s"CHEOGRAM" ++ token)]
+				Nothing -> []
 		Just (DelJid deljid) -> do
 			-- Deleting a JID is much less dangerous since in the worst case SMS just go to the actual phone number
 			TC.runTCM $ TC.out db (T.unpack (bareTxt deljid) ++ "\0cheoJid")
