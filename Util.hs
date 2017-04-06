@@ -22,6 +22,10 @@ log tag x = liftIO $ do
 s :: (IsString a) => String -> a
 s = fromString
 
+infixr .:
+(.:) :: (c -> d) -> (a -> b -> c) -> (a -> b -> d)
+(.:) = (.).(.)
+
 escapeJid :: Text -> Text
 escapeJid txt = mconcat result
 	where
