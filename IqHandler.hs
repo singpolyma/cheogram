@@ -1,8 +1,8 @@
 module IqHandler (main, register) where
 
 import Prelude ()
-import BasicPrelude hiding (log, forM_)
-import Data.Foldable (forM_)
+import BasicPrelude hiding (log, forM_, mapM_)
+import Data.Foldable (forM_, mapM_)
 import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Monad.Loops (iterateM_)
@@ -13,12 +13,14 @@ import qualified Data.Map as Map
 
 import Util
 
+type IqHandler = XMPP.IQ -> IO [StanzaRec]
+
 data IqHandlerCommand =
-	RegisterHandler Text (XMPP.IQ -> IO ()) |
+	RegisterHandler Text IqHandler |
 	HandleIQ XMPP.IQ |
 	RemoveHandler Text
 
-register :: (Text -> (XMPP.IQ -> IO ()) -> IO ()) -> XMPP.IQ -> (XMPP.IQ -> IO()) -> IO XMPP.IQ
+register :: (Text -> IqHandler -> IO ()) -> XMPP.IQ -> IqHandler -> IO XMPP.IQ
 register registerHandler iq handler = UUID.nextUUID >>= go
 	where
 	uuidToId uuid = fromString $ "CHEOGRAM/" ++ UUID.toString uuid
@@ -29,17 +31,17 @@ register registerHandler iq handler = UUID.nextUUID >>= go
 		log "IqHandler.register: UUID generation failed" iq
 		UUID.nextUUID >>= go
 
-main :: IO (Text -> (XMPP.IQ -> IO ()) -> IO (), XMPP.IQ -> IO ())
-main = do
+main :: (StanzaRec -> IO ()) -> IO (Text -> (XMPP.IQ -> IO [StanzaRec]) -> IO (), XMPP.IQ -> IO ())
+main sendStanza = do
 	commands <- newTQueueIO
-	_ <- forkIO $ iterateM_ (thread commands) Map.empty
+	_ <- forkIO $ iterateM_ (thread sendStanza commands) Map.empty
 	return (
 			atomically .: writeTQueue commands .: RegisterHandler,
 			atomically . writeTQueue commands . HandleIQ
 		)
 
-thread :: TQueue IqHandlerCommand -> Map Text (XMPP.IQ -> IO ()) -> IO (Map Text (XMPP.IQ -> IO ()))
-thread commands handlers = do
+thread :: (StanzaRec -> IO ()) -> TQueue IqHandlerCommand -> Map Text IqHandler -> IO (Map Text IqHandler)
+thread sendStanza commands handlers = do
 	command <- atomically $ readTQueue commands
 	case command of
 		RemoveHandler iqID -> return $! Map.delete iqID handlers
@@ -51,7 +53,7 @@ thread commands handlers = do
 			XMPP.iqID = Just iqID
 		}) | typ `elem` [XMPP.IQResult, XMPP.IQError] -> do
 			let (handler, handlers') = lookupAndDelete iqID handlers
-			forM_ handler ($iq)
+			forM_ handler (\h -> h iq >>= mapM_ sendStanza)
 			return handlers'
 		HandleIQ iq -> do
 			log "IQHandler.thread: bad stanza" iq

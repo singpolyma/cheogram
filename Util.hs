@@ -87,3 +87,16 @@ genToken :: Int -> IO Text
 genToken n = do
 	g <- getSystemDRG
 	return $ fst $ withRandomBytes g n (T.decodeUtf8 . encodeBase58 bitcoinAlphabet)
+
+instance Ord XMPP.JID where
+	compare x y = compare (show x) (show y)
+
+data StanzaRec = StanzaRec (Maybe XMPP.JID) (Maybe XMPP.JID) (Maybe Text) (Maybe Text) [Element] Element deriving (Show)
+mkStanzaRec x = StanzaRec (XMPP.stanzaTo x) (XMPP.stanzaFrom x) (XMPP.stanzaID x) (XMPP.stanzaLang x) (XMPP.stanzaPayloads x) (XMPP.stanzaToElement x)
+instance XMPP.Stanza StanzaRec where
+	stanzaTo (StanzaRec to _ _ _ _ _) = to
+	stanzaFrom (StanzaRec _ from _ _ _ _) = from
+	stanzaID (StanzaRec _ _ id _ _ _) = id
+	stanzaLang (StanzaRec _ _ _ lang _ _) = lang
+	stanzaPayloads (StanzaRec _ _ _ _ payloads _) = payloads
+	stanzaToElement (StanzaRec _ _ _ _ _ element) = element
