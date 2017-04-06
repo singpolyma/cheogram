@@ -30,6 +30,7 @@ import Network.Protocol.XMPP -- should import qualified
 
 import Util
 import qualified ConfigureDirectMessageRoute
+import qualified IqHandler
 
 instance Ord JID where
 	compare x y = compare (show x) (show y)
@@ -867,16 +868,6 @@ componentStanza _ _ _ _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = IQResul
 			(cheoJidT:name:servers) | Just cheoJid <- parseJID cheoJidT ->
 				createRoom componentJid servers cheoJid name
 			_ -> return [] -- Invalid packet, ignore
-componentStanza _ _ _ _ toRejoinManager _ _ _ (ReceivedIQ (iq@IQ { iqType = IQResult, iqID = Just id, iqFrom = Just from }))
-	| fromString "CHEOGRAMPING%" `T.isPrefixOf` id = do
-		log "PING RESULT" from
-		atomically $ writeTChan toRejoinManager (PingReply from)
-		return []
-componentStanza _ _ _ _ toRejoinManager _ _ _ (ReceivedIQ (iq@IQ { iqType = IQError, iqID = Just id, iqFrom = Just from }))
-	| fromString "CHEOGRAMPING%" `T.isPrefixOf` id = do
-		log "PING ERROR RESULT" from
-		atomically $ writeTChan toRejoinManager (PingError from)
-		return []
 componentStanza _ (Just smsJid) _ _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = IQError, iqFrom = Just from, iqTo = Just to })) = do
 	log "IQ ERROR" iq
 	return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "Error while querying or configuring " <> formatJID from)]
@@ -990,7 +981,7 @@ participantJid payloads =
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
-component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig componentJid registrationJids conferenceServers = do
+component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toComponent handleIqResult processDirectMessageRouteConfig componentJid registrationJids conferenceServers = do
 	thread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 		log "COMPONENT OUT" stanza
@@ -1067,6 +1058,9 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 								Element (fromString "{jabber:component:accept}error")
 								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
+			(_, _, _, _, ReceivedIQ (iq@(IQ { iqType = typ, iqID = Just id })))
+				| typ `elem` [IQResult, IQError] && fromString "CHEOGRAM/" `T.isPrefixOf` id ->
+					handleIqResult iq
 			(_, _, backendTo, _, _) ->
 				mapM_ sendToComponent =<< componentStanza db backendTo registrationJids toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid stanza
 	where
@@ -1434,7 +1428,7 @@ data RejoinManagerCommand =
 
 data RejoinManagerState = PingSent JID | Rejoining
 
-rejoinManager db sendToComponent componentJid toRoomPresences toRejoinManager =
+rejoinManager db sendToComponent componentJid toRoomPresences toRejoinManager registerIqHandler =
 	next mempty
 	where
 	mkMucJid muc nick = parseJID $ bareTxt muc <> fromString "/" <> nick
@@ -1470,13 +1464,19 @@ rejoinManager db sendToComponent componentJid toRoomPresences toRejoinManager =
 				case Map.lookup mucJid state of
 					Nothing -> do
 						log "PINGING" (mucJid, cheoJid)
-						uuid <- fromMaybe "UUIDFAIL" <$> (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
-						sendToComponent $ mkStanzaRec $ (emptyIQ IQGet) {
+						(sendToComponent . mkStanzaRec =<<) $ registerIqHandler ((emptyIQ IQGet) {
 							iqTo = Just mucJid,
 							iqFrom = Just cheoJid,
-							iqID = Just $ fromString $ "CHEOGRAMPING%" <> uuid,
 							iqPayload = Just $ Element (fromString "{urn:xmpp:ping}ping") [] []
-						}
+						}) $ \result ->
+							case (iqType result, iqFrom result) of
+								(IQError, Just from) -> do
+									log "PING ERROR RESULT" from
+									atomically $ writeTChan toRejoinManager (PingError from)
+								(_, Just from) -> do
+									log "PING RESULT" from
+									atomically $ writeTChan toRejoinManager (PingReply from)
+								_ -> log "PING WUT" result
 						return $! Map.insert mucJid (PingSent cheoJid) state
 					Just (PingSent _) -> do -- Timeout, rejoin
 						log "PING TIMEOUT" (mucJid, cheoJid)
@@ -1633,11 +1633,13 @@ main = do
 			toRoomPresences <- atomically newTChan
 			toRejoinManager <- atomically newTChan
 
+			(registerIqHandler', handleIqResult) <- IqHandler.main
+			let registerIqHandler = IqHandler.register registerIqHandler'
 			void $ forkIO $ joinPartDebouncer db (fromString backendHost) (atomically . writeTChan sendToComponent) componentJid toRoomPresences toJoinPartDebouncer
 			void $ forkIO $ roomPresences db toRoomPresences
 
 			void $ forkIO $ forever $ atomically (writeTChan toRejoinManager CheckPings) >> threadDelay 120000000
-			void $ forkIO $ rejoinManager db (atomically . writeTChan sendToComponent) name toRoomPresences toRejoinManager
+			void $ forkIO $ rejoinManager db (atomically . writeTChan sendToComponent) name toRoomPresences toRejoinManager registerIqHandler
 
 			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main
 				(\userJid ->
@@ -1672,5 +1674,5 @@ main = do
 
 				(log "runComponent ENDED" <=< (runEitherT . syncIO)) $
 					runComponent (Server componentJid host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret)
-						(component db (fromString backendHost) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig componentJid [registrationJid] (map fromString conferences))
+						(component db (fromString backendHost) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent handleIqResult processDirectMessageRouteConfig componentJid [registrationJid] (map fromString conferences))
 		_ -> log "ERROR" "Bad arguments"

@@ -21,7 +21,7 @@ data IqHandlerCommand =
 register :: (Text -> (XMPP.IQ -> IO ()) -> IO ()) -> XMPP.IQ -> (XMPP.IQ -> IO()) -> IO XMPP.IQ
 register registerHandler iq handler = UUID.nextUUID >>= go
 	where
-	uuidToId uuid = fromString $ "CHEOGRAM" ++ UUID.toString uuid
+	uuidToId uuid = fromString $ "CHEOGRAM/" ++ UUID.toString uuid
 	go (Just uuid) = do
 		registerHandler (uuidToId uuid) handler
 		return (iq { XMPP.iqID = Just (uuidToId uuid) })
