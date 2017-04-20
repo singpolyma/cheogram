@@ -786,8 +786,8 @@ componentStanza db (Just smsJid) _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType
 			telDiscoInfo id to from []
 	| Just tel <- strNode <$> jidNode to,
 	  [_] <- isNamed (s"{vcard-temp}vCard") p = do
-		owners <- (fromMaybe [] . (readZ =<<)) <$>
-			maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey smsJid "owners")
+		--owners <- (fromMaybe [] . (readZ =<<)) <$>
+		--	maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey smsJid "owners")
 		return [mkStanzaRec $ (emptyIQ IQResult) {
 			iqTo = Just from,
 			iqFrom = Just to,
@@ -797,8 +797,8 @@ componentStanza db (Just smsJid) _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType
 						NodeElement $ Element (s"{vcard-temp}TEL") [] [
 							NodeElement $ Element (s"{vcard-temp}NUMBER") [] [NodeContent $ ContentText tel]
 						]
-					] ++
-					map (\owner -> NodeElement (Element (s"{vcard-temp}JABBERID") [] [NodeContent $ ContentText owner])) owners
+					]
+					--map (\owner -> NodeElement (Element (s"{vcard-temp}JABBERID") [] [NodeContent $ ContentText owner])) owners
 				)
 		}]
 	where
