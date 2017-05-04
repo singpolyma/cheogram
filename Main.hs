@@ -684,7 +684,7 @@ componentStanza _ _ registrationJids _ _ _ processDirectMessageRouteConfig compo
 					presenceFrom = Just componentJid,
 					presencePayloads = [
 						Element (s"{jabber:component:accept}status") [] [
-							NodeContent $ ContentText $ s"Add this contact and then you can SMS by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s"Jabber IDs."
+							NodeContent $ ContentText $ s"Add this contact and then you can SMS by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs."
 						]
 					]
 				}
