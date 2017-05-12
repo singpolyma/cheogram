@@ -637,9 +637,11 @@ handleRegister _ _ iq _ = do
 	log "HANDLEREGISTER UNKNOWN" iq
 	return []
 
-componentStanza db _ _ _ _ _ _ componentJid (ReceivedMessage (m@Message { messageTo = Just (JID { jidNode = Nothing }), messageFrom = Just from})) = return [
-		mkStanzaRec $ mkSMS componentJid from (s"Instead of sending messages to " ++ formatJID componentJid ++ s" directly, you can SMS your contacts by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs.  Or, for support, come talk to us in xmpp:discuss@conference.soprani.ca?join")
-	]
+componentStanza db _ _ _ _ _ _ componentJid (ReceivedMessage (m@Message { messageTo = Just (JID { jidNode = Nothing }), messageFrom = Just from}))
+	| Just _ <- getBody "jabber:component:accept" m = return [
+			mkStanzaRec $ mkSMS componentJid from (s"Instead of sending messages to " ++ formatJID componentJid ++ s" directly, you can SMS your contacts by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs.  Or, for support, come talk to us in xmpp:discuss@conference.soprani.ca?join")
+		]
+	| otherwise = log "WEIRD BODYLESS MESSAGE DIRECT TO COMPONENT" m >> return []
 componentStanza _ _ _ _ _ _ _ _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
 	  not $ null $ code "104" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
