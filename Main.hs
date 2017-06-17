@@ -275,6 +275,30 @@ iqNotImplemented iq =
 			[NodeElement $ Element (s"{urn:ietf:params:xml:ns:xmpp-stanzas}feature-not-implemented") [] []]
 	}
 
+stripOptionalSuffix suffix text =
+	fromMaybe text $ T.stripSuffix suffix text
+
+-- https://otr.cypherpunks.ca/Protocol-v3-4.0.0.html
+stripOtrWhitespaceOnce body =
+	foldl' (\body' suffix -> stripOptionalSuffix suffix body') body [
+		s"\x20\x20\x09\x09\x20\x20\x09\x09",
+		s"\x20\x20\x09\x09\x20\x20\x09\x20",
+		s"\x20\x09\x20\x09\x20\x20\x09\x20",
+		s"\x20\x09\x20\x20\x09\x09\x09\x09",
+		s"\x20\x09\x20\x09\x20\x09\x20\x20"
+	]
+
+stripOtrWhitespace = stripOtrWhitespaceOnce . stripOtrWhitespaceOnce . stripOtrWhitespaceOnce . stripOtrWhitespaceOnce . stripOtrWhitespaceOnce
+
+mapBody f (m@Message { messagePayloads = payloads }) =
+	m { messagePayloads =
+		map (\payload ->
+			case isNamed (s"{jabber:component:accept}body") payload of
+				[] -> payload
+				_ -> payload { elementNodes = [NodeContent $ ContentText $ f (concat (elementText payload))] }
+		) payloads
+	}
+
 unregisterDirectMessageRoute db componentJid userJid route = do
 	maybeCheoJid <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0cheoJid"))
 	forM_ maybeCheoJid $ \cheoJid -> do
@@ -345,7 +369,7 @@ componentMessage _ componentJid (m@Message { messageType = MessageGroupChat }) e
 	where
 	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") resourceFrom, fromString ") ", body]
 componentMessage db componentJid m@(Message { messageFrom = Just from, messageTo = Just to }) existingRoom bareFrom resourceFrom smsJid (Just body) = do
-	log "WHISPER" (from, smsJid, body)
+	log "WHISPER" (from, smsJid, strippedBody)
 
 	ack <- case isNamed (fromString "{urn:xmpp:receipts}request") =<< messagePayloads m of
 		(_:_) ->
@@ -353,11 +377,13 @@ componentMessage db componentJid m@(Message { messageFrom = Just from, messageTo
 				(deliveryReceipt (fromMaybe mempty $ messageID m) to from)
 		[] -> return []
 
-	fmap (++ack) $ toRouteOrFallback db componentJid bareFrom resourceFrom smsJid m $ do
+	fmap (++ack) $ toRouteOrFallback db componentJid bareFrom resourceFrom smsJid strippedM $ do
 		nick <- nickFor db from existingRoom
-		let txt = mconcat [fromString "(", nick, fromString " whispers) ", body]
+		let txt = mconcat [fromString "(", nick, fromString " whispers) ", strippedBody]
 		return [mkStanzaRec $ mkSMS componentJid smsJid txt]
 	where
+	strippedM = mapBody (const strippedBody) m
+	strippedBody = stripOtrWhitespace body
 	extra = T.unpack $ escapeJid $ T.pack $ show (fromMaybe mempty (messageID m), fromMaybe mempty resourceFrom)
 componentMessage _ _ m _ _ _ _ _ = do
 	log "UNKNOWN MESSAGE" m
