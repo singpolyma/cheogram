@@ -17,7 +17,7 @@ import qualified Data.Attoparsec.Text as Atto
 log :: (Show a, MonadIO m) => String -> a -> m ()
 log tag x = liftIO $ do
 	time <- getCurrentTime
-	putStr (show time ++ s" " ++ fromString tag ++ s" :: ") >> print x >> putStrLn mempty
+	putStr (tshow time ++ s" " ++ fromString tag ++ s" :: ") >> print x >> putStrLn mempty
 
 s :: (IsString a) => String -> a
 s = fromString

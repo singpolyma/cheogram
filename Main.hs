@@ -8,7 +8,7 @@ import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import Data.Traversable (forM, mapM)
 import System.Environment (getArgs)
-import Control.Error (readZ, syncIO, runEitherT, readMay, MaybeT(..), hoistMaybe)
+import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
 import System.Random (Random(randomR), getStdRandom)
@@ -1241,7 +1241,7 @@ parseCommand txt room nick componentJid
 			(parseJID =<< fmap (\r -> bareTxt r <> fromString "/" <> to) room)
 		) <*> pure msg
 	| Just stime <- stripCIPrefix (fromString "/debounce ") txt,
-	  Just time <- readMay (textToString stime) = Just $ Debounce time
+	  Just time <- readMay stime = Just $ Debounce time
 	| citxt == fromString "/join" = Just JoinInvited
 	| citxt == fromString "join" = Just JoinInvitedWrong
 	| citxt == fromString "/leave" = Just Leave
@@ -1739,7 +1739,7 @@ main = do
 			forever $ do
 				log "" "runComponent STARTING"
 
-				(log "runComponent ENDED" <=< (runEitherT . syncIO)) $
+				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
 					runComponent (Server componentJid host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret)
 						(component db (fromString backendHost) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig componentJid [registrationJid] (map fromString conferences))
 		_ -> log "ERROR" "Bad arguments"
