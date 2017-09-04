@@ -939,9 +939,6 @@ componentStanza _ _ _ _ toRejoinManager _ _ _ (ReceivedIQ (iq@IQ { iqType = IQEr
 		log "PING ERROR RESULT" from
 		atomically $ writeTChan toRejoinManager (PingError from)
 		return []
-componentStanza _ (Just smsJid) _ _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = IQError, iqFrom = Just from, iqTo = Just to })) = do
-	log "IQ ERROR" iq
-	return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "Error while querying or configuring " <> formatJID from)]
 componentStanza _ _ _ _ _ _ _ _ (ReceivedIQ (IQ { iqType = IQResult, iqFrom = Just from, iqTo = Just to, iqID = Just id, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/muc#owner}query") p,
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query = do
@@ -1048,6 +1045,9 @@ componentStanza db maybeSmsJid _ _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqTyp
 		_ | typ `elem` [IQGet, IQSet] -> do
 			log "REPLY WITH IQ ERROR (no route)" iq
 			return [mkStanzaRec $ iqNotImplemented iq]
+		_ | typ == IQError, Just smsJid <- maybeSmsJid -> do
+			log "IQ ERROR" iq
+			return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "Error while querying or configuring " <> formatJID from)]
 		_ -> log "IGNORE BOGUS REPLY (no route)" iq >> return []
 componentStanza _ _ _ _ _ _ _ _ s = do
 	log "UNKNOWN STANZA" s
