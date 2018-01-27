@@ -224,7 +224,7 @@ commandList componentJid id from to extras =
 			[(s"{http://jabber.org/protocol/disco#items}node", [ContentText $ s"http://jabber.org/protocol/commands"])]
 			([
 				NodeElement $ Element (s"{http://jabber.org/protocol/disco#items}item") [
-						(s"{http://jabber.org/protocol/disco#items}jid", [ContentText $ formatJID componentJid ++ s"/" ++ ConfigureDirectMessageRoute.nodeName]),
+						(s"{http://jabber.org/protocol/disco#items}jid", [ContentText $ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName]),
 						(s"{http://jabber.org/protocol/disco#items}node", [ContentText $ ConfigureDirectMessageRoute.nodeName]),
 						(s"{http://jabber.org/protocol/disco#items}name", [ContentText $ s"Configure direct message route"])
 				] []
@@ -235,7 +235,7 @@ commandList componentJid id from to extras =
 			NodeElement $ el {
 				elementAttributes = map (\(aname, acontent) ->
 					if aname == s"{http://jabber.org/protocol/disco#items}jid" || aname == s"jid" then
-						(aname, [ContentText $ formatJID componentJid ++ s"/route-command"])
+						(aname, [ContentText $ formatJID componentJid])
 					else
 						(aname, acontent)
 				) (elementAttributes el)
