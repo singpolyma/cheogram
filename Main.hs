@@ -1534,7 +1534,6 @@ rejoinManager db sendToComponent componentJid toRoomPresences toRejoinManager =
 		presenceKeys <- TC.runTCM $ TC.fwmkeys db "presence\0" maxBound
 		(next =<<) $! (\x -> foldM x state (presenceKeys :: [String])) $ \state pkey -> do
 			let Just muc = parseJID =<< T.stripPrefix (fromString "presence\0") (T.pack pkey)
-			log "go state CheckPings" $ fromString "Checking (ping?) participants in " <> formatJID muc <> fromString "..."
 			presences <- fmap (mapMaybe (ourJids muc) . fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db pkey)
 			(\x -> foldM x state presences) $ \state (mucJid, cheoJid) ->
 				case Map.lookup mucJid state of
