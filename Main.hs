@@ -685,12 +685,13 @@ componentStanza _ (Just smsJid) _ _ toRejoinManager _ _ componentJid (ReceivedPr
 		log "FAILED TO REJOIN, try again in 10s" p
 		void $ forkIO $ threadDelay 10000000 >> atomically (writeTChan toRejoinManager $ ForceRejoin from to)
 		return []
-	| otherwise = do
+	| fromString "CHEOGRAMJOIN%" `T.isPrefixOf` id = do
 		log "FAILED TO JOIN" p
 		let errorText = maybe mempty (mconcat . (fromString "\n":) . elementText) $ listToMaybe $
 			isNamed (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}text") =<<
 			elementChildren =<< isNamed (fromString "{jabber:component:accept}error") =<< presencePayloads p
 		return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "* Failed to join " <> bareTxt from <> errorText)]
+	| otherwise = return [] -- presence error from a non-MUC, just ignore
 componentStanza db (Just smsJid) _ toRoomPresences toRejoinManager toJoinPartDebouncer _ componentJid (ReceivedPresence (Presence {
 		presenceType = typ,
 		presenceFrom = Just from,
@@ -1289,7 +1290,7 @@ rejoinRoom db cheoJid room rejoin = do
 
 	uuid <- fromMaybe "UUIDFAIL" <$> (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
 	return [mkStanzaRec $ (emptyPresence PresenceAvailable) {
-		presenceID = Just $ fromString $ (if rejoin then "CHEOGRAMREJOIN%" else "") <> uuid,
+		presenceID = Just $ fromString $ (if rejoin then "CHEOGRAMREJOIN%" else "CHEOGRAMJOIN%") <> uuid,
 		presenceTo = Just room,
 		presenceFrom = Just cheoJid,
 		presencePayloads = [Element (fromString "{http://jabber.org/protocol/muc}x") [] ([
