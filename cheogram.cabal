@@ -4,14 +4,14 @@ cabal-version:   >= 1.14
 license:         OtherLicense
 license-file:    COPYING
 category:        Network
-copyright:       © 2015-2017 Stephen Paul Weber
+copyright:       © Stephen Paul Weber
 author:          Stephen Paul Weber <singpolyma@singpolyma.net>
 maintainer:      Stephen Paul Weber <singpolyma@singpolyma.net>
 stability:       experimental
 tested-with:     GHC == 7.6.3
 synopsis:        Groupchat for everyone!
-homepage:        https://github.com/singpolyma/cheogram
-bug-reports:     https://github.com/singpolyma/cheogram/issues
+homepage:        https://git.singpolyma.net/cheogram
+bug-reports:     mailto:dev@singpolyma.net
 build-type:      Simple
 description:
         Bridge between XMPP MUC and SMS.
@@ -53,4 +53,4 @@ executable cheogram
 
 source-repository head
         type:     git
-        location: git://github.com/singpolyma/cheogram.git
+        location: https://git.singpolyma.net/cheogram
