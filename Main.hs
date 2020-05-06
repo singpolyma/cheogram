@@ -8,15 +8,16 @@ import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import Data.Traversable (forM, mapM)
 import System.Environment (getArgs)
-import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe)
+import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe, headZ)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
+import Network.URI (parseURI, uriPath)
 import System.Random (Random(randomR), getStdRandom)
 import System.Random.Shuffle (shuffleM)
 import Data.Digest.Pure.SHA (sha1, bytestringDigest)
 
 import "monads-tf" Control.Monad.Error (catchError) -- ick
-import Data.XML.Types (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText)
+import Data.XML.Types (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, hasAttribute)
 import qualified Data.CaseInsensitive as CI
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -672,6 +673,10 @@ handleRegister _ _ iq _ = do
 	return []
 
 componentStanza db _ _ _ _ _ _ componentJid (ReceivedMessage (m@Message { messageTo = Just (JID { jidNode = Nothing }), messageFrom = Just from}))
+	| Just reply <- groupTextPorcelein (formatJID componentJid) m =
+		-- TODO: only when from direct message route
+		-- TODO: only if target does not understand stanza addressing
+		return [mkStanzaRec reply]
 	| Just _ <- getBody "jabber:component:accept" m = return [
 			mkStanzaRec $ mkSMS componentJid from (s"Instead of sending messages to " ++ formatJID componentJid ++ s" directly, you can SMS your contacts by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs.  Or, for support, come talk to us in xmpp:discuss@conference.soprani.ca?join")
 		]
@@ -735,12 +740,30 @@ componentStanza db (Just smsJid) _ _ _ _ _ componentJid (ReceivedPresence (Prese
 				presenceFrom = Just to
 			}
 		] ++ stanzas
+componentStanza db Nothing _ _ _ _ _ componentJid (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just node } }))
+	| Just multipleTo <- mapM localpartToURI (T.split (==',') $ strNode node) = do
+	log "SUBSCRIBE GROUPTEXT PORCELEIN" (from, multipleTo)
+	return $ [
+			mkStanzaRec $ (emptyPresence PresenceSubscribed) {
+				presenceTo = Just from,
+				presenceFrom = Just to
+			},
+			mkStanzaRec $ (emptyPresence PresenceSubscribe) {
+				presenceTo = Just from,
+				presenceFrom = Just to
+			},
+			mkStanzaRec $ telAvailable to from []
+		]
 componentStanza _ _ _ _ _ _ _ _ (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	log "RESPOND TO PROBES" (from, to)
 	return [mkStanzaRec $ cheogramAvailable to from]
 componentStanza db (Just smsJid) _ _ _ _ _ componentJid (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just _ } })) = do
 	log "RESPOND TO TEL PROBES" smsJid
 	routeDiscoOrReply db componentJid from smsJid "CHEOGRAM%query-then-send-presence" Nothing $ telAvailable to from []
+componentStanza db _ _ _ _ _ _ componentJid (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just node } }))
+	| Just multipleTo <- mapM localpartToURI (T.split (==',') $ strNode node) = do
+	log "RESPOND TO GROUPCHAT PORCELEIN PROBES" multipleTo
+	return $ [mkStanzaRec $ telAvailable to from []]
 componentStanza _ _ registrationJids _ _ _ processDirectMessageRouteConfig componentJid (ReceivedIQ (IQ { iqType = IQSet, iqTo = Just to, iqFrom = Just from, iqID = Just id, iqPayload = Just p }))
 	| jidNode to == Nothing,
 	  [iqEl] <- isNamed (s"{jabber:client}iq") =<< elementChildren =<< isNamed (s"{urn:xmpp:forward:0}forwarded") p,
@@ -1120,14 +1143,31 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 								tcPut db cheoJid "owners" (show $ (T.unpack $ bareTxt owner) : owners)
 
 							_ -> log "NO TOKEN FOUND, or mismatch" maybeToken
+			(Just from, Just to, Nothing, _, _) |
+				Just multipleTo <- mapM localpartToURI (T.split (==',') $ fromMaybe mempty $ fmap strNode $ jidNode to),
+				ReceivedMessage m <- stanza,
+				Just backendJid <- parseJID backendHost ->
+					log "TO MULTICAST PORCELEIN" to >>
+					let m' = m { messagePayloads = messagePayloads m ++ [
+						Element (s"{http://jabber.org/protocol/address}addresses") [] $ map (\oneto ->
+							NodeElement $ Element (s"{http://jabber.org/protocol/address}address") [
+								(s"{http://jabber.org/protocol/address}type", [ContentText $ s"to"]),
+								(s"{http://jabber.org/protocol/address}uri", [ContentText oneto])
+							] []
+						) multipleTo
+					] } in
+					-- TODO: should check if backend supports XEP-0033
+					-- TODO: fallback for no-backend case should work
+					mapM_ sendToComponent =<< componentMessage db componentJid m' Nothing (bareTxt from) (strResource <$> jidResource from) backendJid (getBody "jabber:component:accept" m')
 			(Just from, Just to, Nothing, Just localpart, _)
-				| fmap (((s"CHEOGRAM%") `T.isPrefixOf`) . strResource) (jidResource to) /= Just True -> do
+				| Nothing <- mapM localpartToURI (T.split (==',') $ fromMaybe mempty $ fmap strNode $ jidNode to),
+				  fmap (((s"CHEOGRAM%") `T.isPrefixOf`) . strResource) (jidResource to) /= Just True -> do
 					let toResourceSuffix = maybe mempty (s"/"++) (strResource <$> jidResource to)
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
 					case (fmap fromString maybeRoute, parseJID (unescapeJid localpart ++ toResourceSuffix), mapToComponent from) of
 						(Just route, Just routeTo, Just componentFrom) | route == strDomain (jidDomain from) -> do
 							log "FROM DIRECT ROUTE" stanza
-							sendToComponent $ receivedStanzaFromTo componentFrom routeTo stanza
+							sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFrom routeTo stanza
 						_ | Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to -> do
 							log "MESSAGE INVALID JID" stanza
 							sendToComponent $ stanzaError stanza $
@@ -1174,15 +1214,15 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 			iqPayload = Just errorPayload
 		}
 
-	receivedStanzaFromTo from to (ReceivedMessage m) = mkStanzaRec $ m {
+	receivedStanzaFromTo from to (ReceivedMessage m) = ReceivedMessage $ m {
 			messageFrom = Just from,
 			messageTo = Just to
 		}
-	receivedStanzaFromTo from to (ReceivedPresence p) = mkStanzaRec $ p {
+	receivedStanzaFromTo from to (ReceivedPresence p) = ReceivedPresence $ p {
 			presenceFrom = Just from,
 			presenceTo = Just to
 		}
-	receivedStanzaFromTo from to (ReceivedIQ iq) = mkStanzaRec $ iq {
+	receivedStanzaFromTo from to (ReceivedIQ iq) = ReceivedIQ $ iq {
 			iqFrom = Just from,
 			iqTo = Just to
 		}
@@ -1191,15 +1231,49 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 	receivedStanza (ReceivedPresence p) = mkStanzaRec p
 	receivedStanza (ReceivedIQ iq) = mkStanzaRec iq
 
-mapToBackend backendHost (JID { jidNode = Just node })
+groupTextPorcelein :: Text -> Message -> Maybe Message
+groupTextPorcelein host m@(Message { messagePayloads = p, messageFrom = Just from })
+	| [addresses] <- isNamed (s"{http://jabber.org/protocol/address}addresses") =<< p,
+	  [body] <- isNamed (s"{jabber:component:accept}body") =<< p,
+	  (jids, uris) <- partition (maybe False (const True) . headZ . hasAttribute (s"jid"))
+			(hasAttributeText (s"type") (`elem` [s"to", s"cc"]) =<<
+			isNamed (s"{http://jabber.org/protocol/address}address") =<< elementChildren addresses),
+	  [Just to] <- (proxiedJidToReal <=< parseJID <=< attributeText (s"jid")) <$> jids,
+	  Just fromTel <- strNode <$> jidNode from,
+	  Just tels <- fmap (textToString fromTel:) $ mapM (fmap uriPath . parseURI . textToString <=< attributeText (s"uri")) uris =
+		Just $ m {
+			messageTo = Just to,
+			messageFrom = parseJID (fromString (intercalate "," (sort tels)) ++ (s"@") ++ host),
+			messagePayloads = body { elementNodes = (NodeContent $ ContentText $ s"(") : (NodeContent $ ContentText fromTel) : (NodeContent $ ContentText $ s") ") : elementNodes body } :
+				filter (`notElem` [addresses, body]) p
+		}
+groupTextPorcelein _ _ = Nothing
+
+proxiedJidToReal :: JID -> Maybe JID
+proxiedJidToReal jid =
+	parseJID =<< fmap (maybe id (\r -> (++ (s"/" ++ r))) resource) bare
+	where
+	resource = strResource <$> jidResource jid
+	bare = unescapeJid . strNode <$> jidNode jid
+
+mapToBackend backendHost (JID { jidNode = Just node }) = mapLocalpartToBackend backendHost (strNode node)
+mapToBackend backendHost (JID { jidNode = Nothing }) = parseJID backendHost
+
+mapLocalpartToBackend backendHost localpart
 	| Just ('+', tel) <- T.uncons localpart,
 	  T.all isDigit tel = result
 	| Just _ <- parsePhoneContext localpart = result
 	| otherwise = Nothing
 	where
 	result = parseJID (localpart ++ s"@" ++ backendHost)
-	localpart = strNode node
-mapToBackend backendHost (JID { jidNode = Nothing }) = parseJID backendHost
+
+localpartToURI localpart
+	| Just ('+', tel) <- T.uncons localpart,
+	  T.all isDigit tel = result
+	| Just _ <- parsePhoneContext localpart = result
+	| otherwise = Nothing
+	where
+	result = Just (s"sms:" ++ localpart)
 
 normalizeTel fullTel
 	| Just ('+',e164) <- T.uncons fullTel,
