@@ -10,8 +10,8 @@ maintainer:      Stephen Paul Weber <singpolyma@singpolyma.net>
 stability:       experimental
 tested-with:     GHC == 7.6.3
 synopsis:        Groupchat for everyone!
-homepage:        https://github.com/singpolyma/sgx-vitelity
-bug-reports:     https://github.com/singpolyma/sgx-vitelity/issues
+homepage:        https://github.com/singpolyma/cheogram
+bug-reports:     https://github.com/singpolyma/cheogram/issues
 build-type:      Simple
 description:
         Bridge between XMPP MUC and SMS.
@@ -21,8 +21,9 @@ extra-source-files:
 
 executable cheogram
         main-is: Main.hs
-        other-modules: ConfigureDirectMessageRoute
+        other-modules: ConfigureDirectMessageRoute, Util
         default-language: Haskell2010
+        ghc-options:      -Wno-tabs -Wno-orphans
 
         build-depends:
                 base == 4.*,
@@ -38,6 +39,7 @@ executable cheogram
                 monad-loops,
                 monads-tf,
                 network,
+                network-uri,
                 network-protocol-xmpp == 0.4.8,
                 random,
                 random-shuffle,
@@ -51,4 +53,4 @@ executable cheogram
 
 source-repository head
         type:     git
-        location: git://github.com/singpolyma/sgx-vitelity.git
+        location: git://github.com/singpolyma/cheogram.git
