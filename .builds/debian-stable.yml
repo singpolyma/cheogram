@@ -1,0 +1,26 @@
+image: debian/stable
+sources:
+- https://git.sr.ht/~singpolyma/cheogram
+packages:
+- ghc
+- cabal-install
+- c2hs
+- pkg-config
+- libgnutls28-dev
+- libgsasl7-dev
+- libtokyocabinet-dev
+- libxml2-dev
+- hlint
+environment:
+  LANG: C.UTF-8
+artifacts:
+- cheogram/dist/build/cheogram
+tasks:
+- cabal_update: |
+    cabal update
+- dependencies: |
+    cd cheogram
+    cabal install --enable-tests --only-dependencies
+- test: |
+    cd cheogram
+    make

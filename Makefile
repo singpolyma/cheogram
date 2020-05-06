@@ -1,6 +1,6 @@
 GHCFLAGS=-Wall -Wno-tabs -fno-warn-name-shadowing -XHaskell2010 -O2
-HLINTFLAGS=-XHaskell2010 -XCPP -i 'Use camelCase' -i 'Use String' -i 'Use head' -i 'Use string literal' -i 'Use list comprehension' --utf8
-VERSION=0.6
+HLINTFLAGS=-XHaskell2010 -XCPP -i 'Use camelCase' -i 'Use String' -i 'Use head' -i 'Use string literal' -i 'Use list comprehension'
+VERSION=0.0.1
 
 .PHONY: all shell clean doc install
 
