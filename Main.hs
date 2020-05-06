@@ -27,6 +27,7 @@ import qualified Data.ByteString.Lazy as LZ
 import qualified Data.ByteString.Base64 as Base64
 import qualified Database.TokyoCabinet as TC
 import Network.Protocol.XMPP -- should import qualified
+import Network.Protocol.XMPP.Internal -- should import qualified
 
 import Util
 import qualified ConfigureDirectMessageRoute
