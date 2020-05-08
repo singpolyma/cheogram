@@ -40,7 +40,7 @@ executable cheogram
                 monads-tf,
                 network,
                 network-uri,
-                network-protocol-xmpp == 0.4.8,
+                network-protocol-xmpp >= 0.4.9,
                 random,
                 random-shuffle,
                 SHA,
