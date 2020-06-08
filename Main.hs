@@ -1,4 +1,6 @@
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 import Prelude (show, read)
 import BasicPrelude hiding (show, read, forM, mapM, forM_, mapM_, getArgs, log)
 import System.IO (stdout, stderr, hSetBuffering, BufferMode(LineBuffering))
@@ -18,6 +20,8 @@ import Data.Digest.Pure.SHA (sha1, bytestringDigest)
 
 import "monads-tf" Control.Monad.Error (catchError) -- ick
 import Data.XML.Types (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, hasAttribute)
+import qualified Dhall
+import qualified Dhall.Core as Dhall hiding (Type)
 import qualified Data.CaseInsensitive as CI
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -1690,6 +1694,24 @@ openTokyoCabinet pth = TC.runTCM $ do
 	True <- TC.open db pth [TC.OREADER, TC.OWRITER, TC.OCREAT]
 	return db
 
+data ServerConfig = ServerConfig { host :: String, port :: Dhall.Natural } deriving (Dhall.Generic, Dhall.Interpret, Show)
+
+data Config = Config {
+	componentJid :: JID,
+	server :: ServerConfig,
+	secret :: Text,
+	backend :: Text,
+	did :: Text,
+	registrationJid :: JID,
+	conferenceServers :: [Text]
+} deriving (Dhall.Generic, Dhall.Interpret, Show)
+
+instance Dhall.Interpret JID where
+	autoWith _ = Dhall.Type {
+			Dhall.extract = \(Dhall.TextLit (Dhall.Chunks _ txt)) -> parseJID txt,
+			Dhall.expected = Dhall.Text
+		}
+
 main :: IO ()
 main = do
 	hSetBuffering stdout LineBuffering
@@ -1704,22 +1726,21 @@ main = do
 			void $ runComponent (Server componentJid host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) $ do
 				mapM_ putStanza =<< registerToGateway componentJid gatewayJid (fromString did) (fromString password)
 				liftIO $ threadDelay 1000000
-		(name:host:port:secret:backendHost:rawdid:registration:conferences) -> do
+		[config] -> do
+			(Config componentJid (ServerConfig host port) secret backendHost rawdid registrationJid conferences) <- Dhall.input Dhall.auto (fromString config)
 			log "" "Starting..."
-			let Just componentJid = parseJID (fromString name)
-			let Just registrationJid = parseJID (fromString registration)
-			let Just did = normalizeTel (fromString rawdid)
+			let Just did = normalizeTel rawdid
 			db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
 			toJoinPartDebouncer <- atomically newTChan
 			sendToComponent <- atomically newTChan
 			toRoomPresences <- atomically newTChan
 			toRejoinManager <- atomically newTChan
 
-			void $ forkIO $ joinPartDebouncer db (fromString backendHost) (atomically . writeTChan sendToComponent) componentJid toRoomPresences toJoinPartDebouncer
+			void $ forkIO $ joinPartDebouncer db backendHost (atomically . writeTChan sendToComponent) componentJid toRoomPresences toJoinPartDebouncer
 			void $ forkIO $ roomPresences db toRoomPresences
 
 			void $ forkIO $ forever $ atomically (writeTChan toRejoinManager CheckPings) >> threadDelay 120000000
-			void $ forkIO $ rejoinManager db (atomically . writeTChan sendToComponent) name toRoomPresences toRejoinManager
+			void $ forkIO $ rejoinManager db (atomically . writeTChan sendToComponent) (textToString $ formatJID componentJid) toRoomPresences toRejoinManager
 
 			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main
 				(\userJid ->
@@ -1752,6 +1773,6 @@ main = do
 				log "" "runComponent STARTING"
 
 				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
-					runComponent (Server componentJid host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret)
-						(component db (fromString backendHost) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig componentJid [registrationJid] (map fromString conferences))
+					runComponent (Server componentJid host (PortNumber $ fromIntegral port)) secret
+						(component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"

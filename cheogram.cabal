@@ -35,6 +35,7 @@ executable cheogram
                 case-insensitive,
                 containers,
                 cryptonite,
+                dhall,
                 errors,
                 monad-loops,
                 monads-tf,
