@@ -9,18 +9,27 @@ import Data.Time (getCurrentTime)
 import Data.XML.Types (Element(..), Node(NodeElement), isNamed, elementText, elementChildren, attributeText)
 import Crypto.Random (getSystemDRG, withRandomBytes)
 import Data.ByteString.Base58 (bitcoinAlphabet, encodeBase58)
+import Data.Void (absurd)
+import UnexceptionalIO (Unexceptional)
+import qualified UnexceptionalIO       as UIO
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Network.Protocol.XMPP as XMPP
 import qualified Data.Attoparsec.Text as Atto
 
-log :: (Show a, MonadIO m) => String -> a -> m ()
-log tag x = liftIO $ do
+instance Unexceptional XMPP.XMPP where
+	lift = liftIO . UIO.lift
+
+log :: (Show a, Unexceptional m) => String -> a -> m ()
+log tag x = fromIO_ $ do
 	time <- getCurrentTime
 	putStr (tshow time ++ s" " ++ fromString tag ++ s" :: ") >> print x >> putStrLn mempty
 
 s :: (IsString a) => String -> a
 s = fromString
+
+fromIO_ :: (Unexceptional m) => IO a -> m a
+fromIO_ = fmap (either absurd id) . UIO.fromIO' (error . show)
 
 escapeJid :: Text -> Text
 escapeJid txt = mconcat result

@@ -37,6 +37,8 @@ executable cheogram
                 cryptonite,
                 dhall,
                 errors,
+                HostAndPort,
+                jingle,
                 monad-loops,
                 monads-tf,
                 network,
@@ -50,6 +52,7 @@ executable cheogram
                 time,
                 tokyocabinet-haskell,
                 uuid,
+                unexceptionalio,
                 xml-types
 
 source-repository head

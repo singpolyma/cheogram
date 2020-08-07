@@ -14,14 +14,19 @@ import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe, headZ)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
 import Network.URI (parseURI, uriPath)
+import Network.HostAndPort (maybeHostAndPort)
 import System.Random (Random(randomR), getStdRandom)
 import System.Random.Shuffle (shuffleM)
 import Data.Digest.Pure.SHA (sha1, bytestringDigest)
+import System.IO.Unsafe (unsafePerformIO)
 
 import "monads-tf" Control.Monad.Error (catchError) -- ick
-import Data.XML.Types (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, hasAttribute)
+import Data.XML.Types (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, attributeContent, hasAttribute, nameNamespace)
+import qualified UnexceptionalIO as UIO
 import qualified Dhall
 import qualified Dhall.Core as Dhall hiding (Type)
+import qualified Jingle
+import qualified Network.Socket as Socket
 import qualified Data.CaseInsensitive as CI
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -183,7 +188,12 @@ telDiscoFeatures = [
 		s"jabber:x:conference",
 		s"urn:xmpp:ping",
 		s"urn:xmpp:receipts",
-		s"vcard-temp"
+		s"vcard-temp",
+		s"urn:xmpp:jingle:1",
+		s"urn:xmpp:jingle:apps:file-transfer:3",
+		s"urn:xmpp:jingle:apps:file-transfer:5",
+		s"urn:xmpp:jingle:transports:s5b:1",
+		s"urn:xmpp:jingle:transports:ibb:1"
 	]
 
 telCapsStr extraVars =
@@ -1044,7 +1054,7 @@ participantJid payloads =
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
-component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig componentJid registrationJids conferenceServers = do
+component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
 	thread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 
@@ -1063,11 +1073,11 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 
 	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread thread)) $ forever $ do
 		stanza <- getStanza
-		liftIO $ case (stanzaFrom $ receivedStanza stanza, stanzaTo $ receivedStanza stanza, mapToBackend backendHost =<< stanzaTo (receivedStanza stanza), fmap strNode . jidNode =<< stanzaTo (receivedStanza stanza), stanza) of
+		case (stanzaFrom $ receivedStanza stanza, stanzaTo $ receivedStanza stanza, mapToBackend backendHost =<< stanzaTo (receivedStanza stanza), fmap strNode . jidNode =<< stanzaTo (receivedStanza stanza), stanza) of
 			(Just from, Just to, _, _, _)
 				| strDomain (jidDomain from) == backendHost,
 				  to == componentJid ->
-					case stanza of
+					liftIO $ case stanza of
 						(ReceivedMessage m@(Message { messageType = MessageError })) ->
 							log "backend error" stanza
 						(ReceivedMessage m)
@@ -1077,7 +1087,7 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 						_ -> log "backend no match" stanza
 			(Just from, Just to, Nothing, Just localpart, ReceivedMessage m)
 				| Just txt <- getBody "jabber:component:accept" m,
-				  (T.length txt == 144 || T.length txt == 145) && (s"CHEOGRAM") `T.isPrefixOf` txt -> do -- the length of our token messages
+				  (T.length txt == 144 || T.length txt == 145) && (s"CHEOGRAM") `T.isPrefixOf` txt -> liftIO $ do -- the length of our token messages
 					log "POSSIBLE TOKEN" (from, to, txt)
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
 					when (Just (strDomain $ jidDomain from) == fmap fromString maybeRoute || bareTxt from == unescapeJid localpart) $ do
@@ -1096,7 +1106,7 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 			(Just from, Just to, Nothing, _, _) |
 				Just multipleTo <- mapM localpartToURI (T.split (==',') $ fromMaybe mempty $ fmap strNode $ jidNode to),
 				ReceivedMessage m <- stanza,
-				Just backendJid <- parseJID backendHost ->
+				Just backendJid <- parseJID backendHost -> liftIO $
 					let m' = m { messagePayloads = messagePayloads m ++ [
 						Element (s"{http://jabber.org/protocol/address}addresses") [] $ map (\oneto ->
 							NodeElement $ Element (s"{http://jabber.org/protocol/address}address") [
@@ -1110,7 +1120,7 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 					mapM_ sendToComponent =<< componentMessage db componentJid m' Nothing (bareTxt from) (strResource <$> jidResource from) backendJid (getBody "jabber:component:accept" m')
 			(Just from, Just to, Nothing, Just localpart, _)
 				| Nothing <- mapM localpartToURI (T.split (==',') $ fromMaybe mempty $ fmap strNode $ jidNode to),
-				  fmap (((s"CHEOGRAM%") `T.isPrefixOf`) . strResource) (jidResource to) /= Just True -> do
+				  fmap (((s"CHEOGRAM%") `T.isPrefixOf`) . strResource) (jidResource to) /= Just True -> liftIO $ do
 					let toResourceSuffix = maybe mempty (s"/"++) (strResource <$> jidResource to)
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
 					case (fmap fromString maybeRoute, parseJID (unescapeJid localpart ++ toResourceSuffix), mapToComponent from) of
@@ -1132,8 +1142,12 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 								Element (fromString "{jabber:component:accept}error")
 								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
-			(_, _, backendTo, _, _) ->
-				mapM_ sendToComponent =<< componentStanza db backendTo registrationJids toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid stanza
+			(_, _, backendTo, _, _)
+				| ReceivedIQ (iq@IQ { iqType = IQSet, iqPayload = Just p }) <- stanza,
+				  (nameNamespace $ elementName p) `elem` [Just (s"urn:xmpp:jingle:1"), Just (s"http://jabber.org/protocol/ibb")] -> do
+					jingleHandler iq
+				| otherwise -> liftIO $
+					mapM_ sendToComponent =<< componentStanza db backendTo registrationJids toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid stanza
 	where
 	mapToComponent = mapToBackend (formatJID componentJid)
 	sendToComponent = atomically . writeTChan toComponent
@@ -1694,7 +1708,7 @@ openTokyoCabinet pth = TC.runTCM $ do
 	True <- TC.open db pth [TC.OREADER, TC.OWRITER, TC.OCREAT]
 	return db
 
-data ServerConfig = ServerConfig { host :: String, port :: Dhall.Natural } deriving (Dhall.Generic, Dhall.Interpret, Show)
+data ServerConfig = ServerConfig { host :: Socket.HostName, port :: Socket.PortNumber } deriving (Dhall.Generic, Dhall.Interpret, Show)
 
 data Config = Config {
 	componentJid :: JID,
@@ -1703,12 +1717,32 @@ data Config = Config {
 	backend :: Text,
 	did :: Text,
 	registrationJid :: JID,
-	conferenceServers :: [Text]
+	conferenceServers :: [Text],
+	s5bListenOn :: [Socket.SockAddr],
+	s5bAdvertise :: ServerConfig,
+	jingleStore :: FilePath,
+	jingleStoreURL :: Text
 } deriving (Dhall.Generic, Dhall.Interpret, Show)
 
 instance Dhall.Interpret JID where
 	autoWith _ = Dhall.Type {
 			Dhall.extract = \(Dhall.TextLit (Dhall.Chunks _ txt)) -> parseJID txt,
+			Dhall.expected = Dhall.Text
+		}
+
+instance Dhall.Interpret Socket.PortNumber where
+	autoWith _ = Dhall.Type {
+			Dhall.extract = \(Dhall.NaturalLit nat) -> Just $ fromIntegral nat,
+			Dhall.expected = Dhall.Natural
+		}
+
+instance Dhall.Interpret Socket.SockAddr where
+	autoWith _ = Dhall.Type {
+			Dhall.extract = (\(Dhall.TextLit (Dhall.Chunks _ txt)) -> do
+				Just (host, Just port) <- return $ maybeHostAndPort (textToString txt)
+				-- This is not a great idea, but I'm lazy today and I really just want to parse IP addresses, which is a pure operation
+				unsafePerformIO $ fmap (fmap Socket.addrAddress . headZ) $ Socket.getAddrInfo Nothing (Just host) (Just port)
+			),
 			Dhall.expected = Dhall.Text
 		}
 
@@ -1723,11 +1757,11 @@ main = do
 			log "" "Registering..."
 			let Just componentJid = parseJID (fromString componentHost)
 			let Just gatewayJid = parseJID (fromString backendHost)
-			void $ runComponent (Server componentJid host (PortNumber $ fromIntegral (read port :: Int))) (fromString secret) $ do
+			void $ runComponent (Server componentJid host (PortNumber $ read port)) (fromString secret) $ do
 				mapM_ putStanza =<< registerToGateway componentJid gatewayJid (fromString did) (fromString password)
 				liftIO $ threadDelay 1000000
 		[config] -> do
-			(Config componentJid (ServerConfig host port) secret backendHost rawdid registrationJid conferences) <- Dhall.input Dhall.auto (fromString config)
+			(Config componentJid (ServerConfig host port) secret backendHost rawdid registrationJid conferences s5bListenOn (ServerConfig s5bhost s5bport) jingleStore jingleStoreURL) <- Dhall.input Dhall.auto (fromString config)
 			log "" "Starting..."
 			let Just did = normalizeTel rawdid
 			db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
@@ -1769,10 +1803,41 @@ main = do
 								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid existingRoute
 				)
 
+			jingleHandler <- UIO.runEitherIO $ Jingle.setupJingleHandlers jingleStore s5bListenOn (fromString s5bhost, s5bport)
+				(log "JINGLE")
+				(\iq@(IQ { iqPayload = Just jingle }) path ->
+					forM_ (isNamed (s"{urn:xmpp:jingle:1}content") =<< elementChildren jingle) $ \content ->
+					let fileDesc = mfilter (/=mempty) $ fmap (mconcat . elementText) $ headZ (isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}desc") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}file") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}description") =<< elementChildren content) in
+					(fromIO_ (mapM_ (atomically . writeTChan sendToComponent) =<< componentStanza db (mapToBackend backendHost =<< stanzaTo iq) [registrationJid] toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid (
+						let url = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) in
+						ReceivedMessage $ (emptyMessage MessageNormal) {
+							messageFrom = iqFrom iq,
+							messageTo = iqTo iq,
+							messagePayloads = [
+								Element (s"{jabber:component:accept}body") [] [NodeContent $ ContentText $ maybe mempty (++s"\n") fileDesc ++ url],
+								Element (s"{jabber:x:oob}x") [] ([
+									NodeElement $ Element (s"{jabber:x:oob}url") [] [NodeContent $ ContentText url]
+								] ++ (maybe [] (\desc -> pure $ NodeElement $ Element (s"{jabber:x:oob}desc") [] [NodeContent $ ContentText desc]) fileDesc))
+							]
+						}
+					)) >>) $ -- TODO: need to end session for Conversations
+					fromIO_ $ atomically $ writeTChan sendToComponent $ mkStanzaRec $ (emptyIQ IQSet) {
+						iqTo = iqFrom iq,
+						iqFrom = iqTo iq,
+						iqPayload = Just $ Element
+							(s"{urn:xmpp:jingle:1}jingle")
+							[(s"action", [s"session-info"]), (s"sid", [ContentText $ fromMaybe mempty $ attributeText (s"sid") jingle])]
+							[
+								NodeElement $ Element (s"{urn:xmpp:jingle:apps:file-transfer:5}received")
+								[(s"creator", fromMaybe [] $ attributeContent (s"creator") content), (s"name", fromMaybe [] $ attributeContent (s"name") content)] []
+							]
+					}
+				)
+
 			forever $ do
 				log "" "runComponent STARTING"
 
 				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
-					runComponent (Server componentJid host (PortNumber $ fromIntegral port)) secret
-						(component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig componentJid [registrationJid] conferences)
+					runComponent (Server componentJid host (PortNumber port)) secret
+						(component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
