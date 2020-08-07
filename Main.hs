@@ -21,7 +21,7 @@ import Data.Digest.Pure.SHA (sha1, bytestringDigest)
 import System.IO.Unsafe (unsafePerformIO)
 
 import "monads-tf" Control.Monad.Error (catchError) -- ick
-import Data.XML.Types (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, attributeContent, hasAttribute, nameNamespace)
+import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, attributeContent, hasAttribute, nameNamespace)
 import qualified UnexceptionalIO as UIO
 import qualified Dhall
 import qualified Dhall.Core as Dhall hiding (Type)
@@ -36,7 +36,7 @@ import qualified Data.UUID.V1 as UUID ( nextUUID )
 import qualified Data.ByteString.Lazy as LZ
 import qualified Data.ByteString.Base64 as Base64
 import qualified Database.TokyoCabinet as TC
-import Network.Protocol.XMPP -- should import qualified
+import Network.Protocol.XMPP as XMPP -- should import qualified
 import Network.Protocol.XMPP.Internal -- should import qualified
 
 import Util
@@ -1125,7 +1125,11 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
 					case (fmap fromString maybeRoute, parseJID (unescapeJid localpart ++ toResourceSuffix), mapToComponent from) of
 						(Just route, Just routeTo, Just componentFrom) | route == strDomain (jidDomain from) -> do
-							sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFrom routeTo stanza
+								sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFrom routeTo stanza
+						(Just route, Just routeTo, Just componentFrom)
+							| (s"sip.cheogram.com") == strDomain (jidDomain from),
+							  Just componentFromSip <- parseJID (formatJID componentFrom ++ s"/sip:" ++ escapeJid (formatJID from)) -> do
+								sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFromSip routeTo stanza
 						_ | Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to -> do
 							sendToComponent $ stanzaError stanza $
 								Element (fromString "{jabber:component:accept}error")
@@ -1142,7 +1146,12 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 								Element (fromString "{jabber:component:accept}error")
 								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
-			(_, _, backendTo, _, _)
+			(mfrom, to, backendTo, _, _)
+				| Just sipJid <- parseJID =<< T.stripPrefix (s"sip:") =<< (unescapeJid . strResource <$> (jidResource =<< to)),
+				  Just from <- mfrom,
+				  resourceSuffix <- maybe mempty (s"/"++) (fmap strResource (jidResource =<< mfrom)),
+				  Just useFrom <- parseJID $ (escapeJid $ bareTxt from) ++ s"@" ++ formatJID componentJid ++ resourceSuffix -> do
+					liftIO $ sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo useFrom sipJid stanza
 				| ReceivedIQ (iq@IQ { iqType = IQSet, iqPayload = Just p }) <- stanza,
 				  (nameNamespace $ elementName p) `elem` [Just (s"urn:xmpp:jingle:1"), Just (s"http://jabber.org/protocol/ibb")] -> do
 					jingleHandler iq
@@ -1182,7 +1191,7 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 			presenceFrom = Just from,
 			presenceTo = Just to
 		}
-	receivedStanzaFromTo from to (ReceivedIQ iq) = ReceivedIQ $ iq {
+	receivedStanzaFromTo from to (ReceivedIQ iq) = ReceivedIQ $ rewriteJingleInitiatorResponder $ iq {
 			iqFrom = Just from,
 			iqTo = Just to
 		}
@@ -1190,6 +1199,21 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 	receivedStanza (ReceivedMessage m) = mkStanzaRec m
 	receivedStanza (ReceivedPresence p) = mkStanzaRec p
 	receivedStanza (ReceivedIQ iq) = mkStanzaRec iq
+
+-- Jingle session-initiate and session-accept iqs contain the sending JID
+-- again for some reason, so make sure we keep those the same
+rewriteJingleInitiatorResponder iq
+	| Just jingle <- child (s"{urn:xmpp:jingle:1}jingle") iq = iq {
+			XMPP.iqPayload = Just $ jingle {
+				XML.elementAttributes = map initiatorResponder (XML.elementAttributes jingle)
+			}
+		}
+	| otherwise = iq
+	where
+	initiatorResponder (name, content)
+		| name == s"initiator" = (name, [XML.ContentText $ maybe (s"") XMPP.formatJID (XMPP.iqFrom iq)])
+		| name == s"responder" = (name, [XML.ContentText $ maybe (s"") XMPP.formatJID (XMPP.iqFrom iq)])
+		| otherwise = (name, content)
 
 groupTextPorcelein :: Text -> Message -> Maybe Message
 groupTextPorcelein host m@(Message { messagePayloads = p, messageFrom = Just from })
@@ -1220,12 +1244,14 @@ mapToBackend backendHost (JID { jidNode = Just node }) = mapLocalpartToBackend b
 mapToBackend backendHost (JID { jidNode = Nothing }) = parseJID backendHost
 
 mapLocalpartToBackend backendHost localpart
-	| Just ('+', tel) <- T.uncons localpart,
+	| Just ('+', tel) <- T.uncons localpart',
 	  T.all isDigit tel = result
 	| Just _ <- parsePhoneContext localpart = result
 	| otherwise = Nothing
 	where
-	result = parseJID (localpart ++ s"@" ++ backendHost)
+	-- Unescape local and strip any @suffix in case this is a tel-like SIP uri
+	(localpart', _) = T.breakOn (s"@") $ unescapeJid localpart
+	result = parseJID (localpart' ++ s"@" ++ backendHost)
 
 localpartToURI localpart
 	| Just ('+', tel) <- T.uncons localpart,

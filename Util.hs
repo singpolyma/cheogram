@@ -6,7 +6,7 @@ import Data.Char (isDigit)
 import Control.Applicative (many)
 import Control.Error (hush)
 import Data.Time (getCurrentTime)
-import Data.XML.Types (Element(..), Node(NodeElement), isNamed, elementText, elementChildren, attributeText)
+import Data.XML.Types (Name, Element(..), Node(NodeElement), isNamed, elementText, elementChildren, attributeText)
 import Crypto.Random (getSystemDRG, withRandomBytes)
 import Data.ByteString.Base58 (bitcoinAlphabet, encodeBase58)
 import Data.Void (absurd)
@@ -92,3 +92,7 @@ genToken :: Int -> IO Text
 genToken n = do
 	g <- getSystemDRG
 	return $ fst $ withRandomBytes g n (T.decodeUtf8 . encodeBase58 bitcoinAlphabet)
+
+child :: (XMPP.Stanza s) => Name -> s -> Maybe Element
+child name = listToMaybe .
+	(isNamed name <=< XMPP.stanzaPayloads)
