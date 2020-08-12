@@ -1246,11 +1246,11 @@ mapToBackend backendHost (JID { jidNode = Nothing }) = parseJID backendHost
 mapLocalpartToBackend backendHost localpart
 	| Just ('+', tel) <- T.uncons localpart',
 	  T.all isDigit tel = result
-	| Just _ <- parsePhoneContext localpart = result
+	| Just _ <- parsePhoneContext localpart' = result
 	| otherwise = Nothing
 	where
 	-- Unescape local and strip any @suffix in case this is a tel-like SIP uri
-	(localpart', _) = T.breakOn (s"@") $ unescapeJid localpart
+	localpart' = sanitizeTelCandidate $ fst $ T.breakOn (s"@") $ unescapeJid localpart
 	result = parseJID (localpart' ++ s"@" ++ backendHost)
 
 localpartToURI localpart

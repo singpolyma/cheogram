@@ -67,6 +67,23 @@ unescapeJid txt = fromString result
 			("20", ' '), ("22", '"'), ("26", '&'), ("27", '\''), ("2f", '/'), ("3a", ':'), ("3c", '<'), ("3e", '>'), ("40", '@'), ("5c", '\\')
 		]
 
+-- To handle blocked callers, etc
+sanitizeTelCandidate :: Text -> Text
+sanitizeTelCandidate candidate
+	| T.length candidate < 3 =
+		s"13;phone-context=anonymous.phone-context.soprani.ca"
+	| candidate == s"Restricted" =
+		s"14;phone-context=anonymous.phone-context.soprani.ca"
+	| candidate == s"anonymous" =
+		s"15;phone-context=anonymous.phone-context.soprani.ca"
+	| candidate == s"Anonymous" =
+		s"16;phone-context=anonymous.phone-context.soprani.ca"
+	| candidate == s"unavailable" =
+		s"17;phone-context=anonymous.phone-context.soprani.ca"
+	| candidate == s"Unavailable" =
+		s"18;phone-context=anonymous.phone-context.soprani.ca"
+	| otherwise = candidate
+
 parsePhoneContext :: Text -> Maybe (Text, Text)
 parsePhoneContext txt = hush $ Atto.parseOnly (
 		(,) <$> Atto.takeWhile isDigit <* Atto.string (s";phone-context=") <*> Atto.takeTill (Atto.inClass " ;")
