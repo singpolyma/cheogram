@@ -1103,10 +1103,10 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 								tcPut db cheoJid "owners" (show $ (T.unpack $ bareTxt owner) : owners)
 
 							_ -> log "NO TOKEN FOUND, or mismatch" maybeToken
-			(Just from, Just to, Nothing, _, _) |
-				Just multipleTo <- mapM localpartToURI (T.split (==',') $ fromMaybe mempty $ fmap strNode $ jidNode to),
-				ReceivedMessage m <- stanza,
-				Just backendJid <- parseJID backendHost -> liftIO $
+			(Just from, Just to, Nothing, Just localpart, _)
+				| Just multipleTo <- mapM localpartToURI (T.split (==',') localpart),
+				  ReceivedMessage m <- stanza,
+				  Just backendJid <- parseJID backendHost -> liftIO $
 					let m' = m { messagePayloads = messagePayloads m ++ [
 						Element (s"{http://jabber.org/protocol/address}addresses") [] $ map (\oneto ->
 							NodeElement $ Element (s"{http://jabber.org/protocol/address}address") [
@@ -1118,6 +1118,16 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 					-- TODO: should check if backend supports XEP-0033
 					-- TODO: fallback for no-backend case should work
 					mapM_ sendToComponent =<< componentMessage db componentJid m' Nothing (bareTxt from) (strResource <$> jidResource from) backendJid (getBody "jabber:component:accept" m')
+				| (s"sip.cheogram.com") == strDomain (jidDomain from) -> liftIO $
+					case (mapLocalpartToBackend (formatJID componentJid) =<< sanitizeSipLocalpart (maybe mempty strNode $ jidNode from), parseJID (unescapeJid localpart ++ (maybe mempty (s"/"++) (strResource <$> jidResource to)))) of
+						(Just componentFrom, Just routeTo) -> liftIO $ do
+							Just componentFromSip <- return $ parseJID (formatJID componentFrom ++ s"/sip:" ++ escapeJid (formatJID from))
+							sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFromSip routeTo stanza
+						_ ->
+							sendToComponent $ stanzaError stanza $
+								Element (fromString "{jabber:component:accept}error")
+								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
+								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
 			(Just from, Just to, Nothing, Just localpart, _)
 				| Nothing <- mapM localpartToURI (T.split (==',') $ fromMaybe mempty $ fmap strNode $ jidNode to),
 				  fmap (((s"CHEOGRAM%") `T.isPrefixOf`) . strResource) (jidResource to) /= Just True -> liftIO $ do
@@ -1126,10 +1136,6 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 					case (fmap fromString maybeRoute, parseJID (unescapeJid localpart ++ toResourceSuffix), mapToComponent from) of
 						(Just route, Just routeTo, Just componentFrom) | route == strDomain (jidDomain from) -> do
 								sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFrom routeTo stanza
-						(Just route, Just routeTo, Just componentFrom)
-							| (s"sip.cheogram.com") == strDomain (jidDomain from),
-							  Just componentFromSip <- parseJID (formatJID componentFrom ++ s"/sip:" ++ escapeJid (formatJID from)) -> do
-								sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFromSip routeTo stanza
 						_ | Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to -> do
 							sendToComponent $ stanzaError stanza $
 								Element (fromString "{jabber:component:accept}error")
@@ -1141,7 +1147,7 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 										[(fromString "xml:lang", [ContentText $ fromString "en"])]
 										[NodeContent $ ContentText $ fromString "JID must include country code: " <> formatJID jid]
 								]
-						  | otherwise -> do
+						  | otherwise ->
 							sendToComponent $ stanzaError stanza $
 								Element (fromString "{jabber:component:accept}error")
 								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
@@ -1244,14 +1250,12 @@ mapToBackend backendHost (JID { jidNode = Just node }) = mapLocalpartToBackend b
 mapToBackend backendHost (JID { jidNode = Nothing }) = parseJID backendHost
 
 mapLocalpartToBackend backendHost localpart
-	| Just ('+', tel) <- T.uncons localpart',
+	| Just ('+', tel) <- T.uncons localpart,
 	  T.all isDigit tel = result
-	| Just _ <- parsePhoneContext localpart' = result
+	| Just _ <- parsePhoneContext localpart = result
 	| otherwise = Nothing
 	where
-	-- Unescape local and strip any @suffix in case this is a tel-like SIP uri
-	localpart' = sanitizeTelCandidate $ fst $ T.breakOn (s"@") $ unescapeJid localpart
-	result = parseJID (localpart' ++ s"@" ++ backendHost)
+	result = parseJID (localpart ++ s"@" ++ backendHost)
 
 localpartToURI localpart
 	| Just ('+', tel) <- T.uncons localpart,

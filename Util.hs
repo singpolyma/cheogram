@@ -67,22 +67,25 @@ unescapeJid txt = fromString result
 			("20", ' '), ("22", '"'), ("26", '&'), ("27", '\''), ("2f", '/'), ("3a", ':'), ("3c", '<'), ("3e", '>'), ("40", '@'), ("5c", '\\')
 		]
 
--- To handle blocked callers, etc
-sanitizeTelCandidate :: Text -> Text
-sanitizeTelCandidate candidate
+sanitizeSipLocalpart :: Text -> Maybe Text
+sanitizeSipLocalpart localpart
+	| Just ('+', tel) <- T.uncons candidate,
+	  T.all isDigit tel = Just candidate
 	| T.length candidate < 3 =
-		s"13;phone-context=anonymous.phone-context.soprani.ca"
+		Just $ s"13;phone-context=anonymous.phone-context.soprani.ca"
 	| candidate == s"Restricted" =
-		s"14;phone-context=anonymous.phone-context.soprani.ca"
+		Just $ s"14;phone-context=anonymous.phone-context.soprani.ca"
 	| candidate == s"anonymous" =
-		s"15;phone-context=anonymous.phone-context.soprani.ca"
+		Just $ s"15;phone-context=anonymous.phone-context.soprani.ca"
 	| candidate == s"Anonymous" =
-		s"16;phone-context=anonymous.phone-context.soprani.ca"
+		Just $ s"16;phone-context=anonymous.phone-context.soprani.ca"
 	| candidate == s"unavailable" =
-		s"17;phone-context=anonymous.phone-context.soprani.ca"
+		Just $ s"17;phone-context=anonymous.phone-context.soprani.ca"
 	| candidate == s"Unavailable" =
-		s"18;phone-context=anonymous.phone-context.soprani.ca"
-	| otherwise = candidate
+		Just $ s"18;phone-context=anonymous.phone-context.soprani.ca"
+	| otherwise = Nothing
+	where
+	candidate = fst $ T.breakOn (s"@") $ unescapeJid localpart
 
 parsePhoneContext :: Text -> Maybe (Text, Text)
 parsePhoneContext txt = hush $ Atto.parseOnly (
