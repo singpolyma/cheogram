@@ -2,13 +2,16 @@ module Util where
 
 import Prelude ()
 import BasicPrelude
+import Data.Word (Word16)
+import Data.Bits (shiftL, (.|.))
 import Data.Char (isDigit)
 import Control.Applicative (many)
 import Control.Error (hush)
 import Data.Time (getCurrentTime)
-import Data.XML.Types (Name, Element(..), Node(NodeElement), isNamed, elementText, elementChildren, attributeText)
+import Data.XML.Types as XML (Name, Element(..), Node(NodeElement), isNamed, elementText, elementChildren, attributeText)
 import Crypto.Random (getSystemDRG, withRandomBytes)
 import Data.ByteString.Base58 (bitcoinAlphabet, encodeBase58)
+import Data.Digest.Pure.SHA (sha1, bytestringDigest)
 import Data.Void (absurd)
 import UnexceptionalIO (Unexceptional)
 import qualified UnexceptionalIO       as UIO
@@ -16,6 +19,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Network.Protocol.XMPP as XMPP
 import qualified Data.Attoparsec.Text as Atto
+import qualified Data.ByteString.Lazy as LZ
 
 instance Unexceptional XMPP.XMPP where
 	lift = liftIO . UIO.lift
@@ -87,6 +91,24 @@ sanitizeSipLocalpart localpart
 	where
 	candidate = fst $ T.breakOn (s"@") $ unescapeJid localpart
 
+showAvailableness :: String -> Word8
+showAvailableness "chat" = 4
+showAvailableness "away" = 3
+showAvailableness "dnd"  = 2
+showAvailableness "xa"   = 1
+showAvailableness _      = 0
+
+priorityAvailableness :: Integer -> Word8
+priorityAvailableness priority
+	| priority > 127 = 0xff
+	| priority < -128 = 0x00
+	| otherwise = fromIntegral (priority + 128)
+
+availableness :: Text -> Integer -> Word16
+availableness sshow priority =
+	(fromIntegral (showAvailableness (textToString sshow)) `shiftL` 8) .|.
+	(fromIntegral (priorityAvailableness priority))
+
 parsePhoneContext :: Text -> Maybe (Text, Text)
 parsePhoneContext txt = hush $ Atto.parseOnly (
 		(,) <$> Atto.takeWhile isDigit <* Atto.string (s";phone-context=") <*> Atto.takeTill (Atto.inClass " ;")
@@ -116,3 +138,61 @@ genToken n = do
 child :: (XMPP.Stanza s) => Name -> s -> Maybe Element
 child name = listToMaybe .
 	(isNamed name <=< XMPP.stanzaPayloads)
+
+attrOrBlank :: XML.Name -> XML.Element -> Text
+attrOrBlank name el = fromMaybe mempty $ XML.attributeText name el
+
+discoCapsIdentities :: XML.Element -> [Text]
+discoCapsIdentities query =
+	sort $
+	map (\identity -> mconcat $ intersperse (s"/") [
+		attrOrBlank (s"category") identity,
+		attrOrBlank (s"type") identity,
+		attrOrBlank (s"xml:lang") identity,
+		attrOrBlank (s"name") identity
+	]) $
+	XML.isNamed (s"{http://jabber.org/protocol/disco#info}identity") =<<
+		XML.elementChildren query
+
+discoVars :: XML.Element -> [Text]
+discoVars query =
+	mapMaybe (XML.attributeText (s"var")) $
+	XML.isNamed (s"{http://jabber.org/protocol/disco#info}feature") =<<
+		XML.elementChildren query
+
+data DiscoForm = DiscoForm Text [(Text, [Text])] deriving (Show, Ord, Eq)
+
+oneDiscoForm :: XML.Element -> DiscoForm
+oneDiscoForm form =
+	DiscoForm form_type (filter ((/= s"FORM_TYPE") . fst) fields)
+	where
+	form_type = mconcat $ fromMaybe [] $ lookup (s"FORM_TYPE") fields
+	fields = sort $ map (\field ->
+			(
+				attrOrBlank (s"var") field,
+				sort (map (mconcat . XML.elementText) $ XML.isNamed (s"{jabber:x:data}value") =<< XML.elementChildren form)
+			)
+		) $
+		XML.isNamed (s"{jabber:x:data}field") =<<
+			XML.elementChildren form
+
+discoForms :: XML.Element -> [DiscoForm]
+discoForms query =
+	sort $
+	map oneDiscoForm $
+	XML.isNamed (s"{jabber:x:data}x") =<<
+		XML.elementChildren query
+
+discoCapsForms :: XML.Element -> [Text]
+discoCapsForms query =
+	concatMap (\(DiscoForm form_type fields) ->
+		form_type : concatMap (uncurry (:)) fields
+	) (discoForms query)
+
+discoToCaps :: XML.Element -> Text
+discoToCaps query =
+	(mconcat $ intersperse (s"<") (discoCapsIdentities query ++ discoVars query ++ discoCapsForms query)) ++ s"<"
+
+discoToCapsHash :: XML.Element -> ByteString
+discoToCapsHash query =
+	LZ.toStrict $ bytestringDigest $ sha1 $ LZ.fromStrict $ T.encodeUtf8 $ discoToCaps query

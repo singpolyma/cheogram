@@ -10,7 +10,7 @@ import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import Data.Traversable (forM, mapM)
 import System.Environment (getArgs)
-import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe, headZ)
+import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe, headZ, hush)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
 import Network.URI (parseURI, uriPath)
@@ -34,12 +34,16 @@ import qualified Data.Map as Map
 import qualified Data.UUID as UUID ( toString )
 import qualified Data.UUID.V1 as UUID ( nextUUID )
 import qualified Data.ByteString.Lazy as LZ
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Builder as Builder
 import qualified Database.TokyoCabinet as TC
+import qualified Database.Redis as Redis
 import Network.Protocol.XMPP as XMPP -- should import qualified
 import Network.Protocol.XMPP.Internal -- should import qualified
 
 import Util
+import qualified RedisURL
 import qualified ConfigureDirectMessageRoute
 
 instance Ord JID where
@@ -1054,7 +1058,7 @@ participantJid payloads =
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
-component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
+component db redis backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
 	thread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 
@@ -1073,6 +1077,56 @@ component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toC
 
 	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread thread)) $ forever $ do
 		stanza <- getStanza
+		liftIO $ forkIO $ case stanza of
+			(ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
+				| Just returnFrom <- parseJID (bareTxt to ++ s"/capsQuery") ->
+				let
+					cheogramBareJid = escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid
+					caps = child (s"{http://jabber.org/protocol/caps}c") p
+					show = maybe mempty mconcat $ elementText <$> child (s"{jabber:component:accept}show") p
+					priority = fromMaybe 0 $ (readZ . textToString . mconcat =<< elementText <$> child (s"{jabber:component:accept}priority") p)
+					pavailableness = availableness show priority
+				in
+				-- Caps?
+				case (XML.attributeText (s"ver") =<< caps, XML.attributeText (s"node") =<< caps) of
+				-- Yes: write ver to <barejid>/resource and <cheoagramjid>/resource
+					(Just ver, Just node) -> do
+						let bver = Base64.decodeLenient $ encodeUtf8 ver
+						let val = LZ.toStrict $ Builder.toLazyByteString (Builder.word16BE pavailableness ++ Builder.byteString bver)
+						Right exists <- Redis.runRedis redis $ do
+							Redis.hset (encodeUtf8 $ bareTxt from) (encodeUtf8 $ maybe mempty strResource $ jidResource from) val
+							Redis.hset (encodeUtf8 $ cheogramBareJid) (encodeUtf8 $ maybe mempty strResource $ jidResource from) val
+					-- ver in redis?
+							Redis.exists bver
+					-- Yes: done
+					-- No: send disco query, with node
+						when (not exists) $ mapM_ sendToComponent =<< queryDiscoWithNode (Just $ node ++ s"#" ++ ver) from returnFrom
+				-- No: write only availableness to redis. send disco query, no node
+					_ -> do
+						let val = LZ.toStrict $ Builder.toLazyByteString (Builder.word16BE pavailableness)
+						void $ Redis.runRedis redis $ do
+							Redis.hset (encodeUtf8 $ bareTxt from) (encodeUtf8 $ maybe mempty strResource $ jidResource from) val
+							Redis.hset (encodeUtf8 $ cheogramBareJid) (encodeUtf8 $ maybe mempty strResource $ jidResource from) val
+						mapM_ sendToComponent =<< queryDisco from returnFrom
+			(ReceivedPresence (Presence { presenceType = PresenceUnavailable, presenceFrom = Just from })) -> do
+				let cheogramBareJid = escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid
+				-- Delete <barejid>/resource and <cheogramjid>/resource
+				void $ Redis.runRedis redis $ do
+					Redis.hdel (encodeUtf8 $ bareTxt from) [encodeUtf8 $ maybe mempty strResource $ jidResource from]
+					Redis.hdel (encodeUtf8 $ cheogramBareJid) [encodeUtf8 $ maybe mempty strResource $ jidResource from]
+			(ReceivedIQ iq@(IQ { iqType = IQResult, iqFrom = Just from }))
+				| Just query <- child (s"{http://jabber.org/protocol/disco#info}query") iq -> do
+				let cheogramBareJid = escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid
+				let bver = discoToCapsHash query
+				-- Write <ver> with the list of features
+				void $ Redis.runRedis redis $ do
+					Redis.sadd bver (encodeUtf8 <$> discoVars query)
+				-- Write ver to <barejid>/resource and <cheogramjid>/resource
+					Right ravailableness <- (fmap . fmap) (maybe (BS.pack [0,0]) (BS.take 2)) $ Redis.hget (encodeUtf8 $ bareTxt from) (encodeUtf8 $ maybe mempty strResource $ jidResource from)
+					let val = ravailableness ++ bver
+					Redis.hset (encodeUtf8 $ bareTxt from) (encodeUtf8 $ maybe mempty strResource $ jidResource from) val
+					Redis.hset (encodeUtf8 $ cheogramBareJid) (encodeUtf8 $ maybe mempty strResource $ jidResource from) val
+			_ -> return ()
 		case (stanzaFrom $ receivedStanza stanza, stanzaTo $ receivedStanza stanza, mapToBackend backendHost =<< stanzaTo (receivedStanza stanza), fmap strNode . jidNode =<< stanzaTo (receivedStanza stanza), stanza) of
 			(Just from, Just to, _, _, _)
 				| strDomain (jidDomain from) == backendHost,
@@ -1751,7 +1805,8 @@ data Config = Config {
 	s5bListenOn :: [Socket.SockAddr],
 	s5bAdvertise :: ServerConfig,
 	jingleStore :: FilePath,
-	jingleStoreURL :: Text
+	jingleStoreURL :: Text,
+	redis :: Redis.ConnectInfo
 } deriving (Dhall.Generic, Dhall.Interpret, Show)
 
 instance Dhall.Interpret JID where
@@ -1776,6 +1831,14 @@ instance Dhall.Interpret Socket.SockAddr where
 			Dhall.expected = Dhall.Text
 		}
 
+instance Dhall.Interpret Redis.ConnectInfo where
+	autoWith _ = Dhall.Type {
+			Dhall.extract = (\(Dhall.TextLit (Dhall.Chunks _ txt)) ->
+				hush $ RedisURL.parseConnectInfo $ textToString txt
+			),
+			Dhall.expected = Dhall.Text
+		}
+
 main :: IO ()
 main = do
 	hSetBuffering stdout LineBuffering
@@ -1791,10 +1854,11 @@ main = do
 				mapM_ putStanza =<< registerToGateway componentJid gatewayJid (fromString did) (fromString password)
 				liftIO $ threadDelay 1000000
 		[config] -> do
-			(Config componentJid (ServerConfig host port) secret backendHost rawdid registrationJid conferences s5bListenOn (ServerConfig s5bhost s5bport) jingleStore jingleStoreURL) <- Dhall.input Dhall.auto (fromString config)
+			(Config componentJid (ServerConfig host port) secret backendHost rawdid registrationJid conferences s5bListenOn (ServerConfig s5bhost s5bport) jingleStore jingleStoreURL redisConnectInfo) <- Dhall.input Dhall.auto (fromString config)
 			log "" "Starting..."
 			let Just did = normalizeTel rawdid
 			db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
+			redis <- Redis.checkedConnect redisConnectInfo
 			toJoinPartDebouncer <- atomically newTChan
 			sendToComponent <- atomically newTChan
 			toRoomPresences <- atomically newTChan
@@ -1869,5 +1933,5 @@ main = do
 
 				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
 					runComponent (Server componentJid host (PortNumber port)) secret
-						(component db backendHost toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+						(component db redis backendHost toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
