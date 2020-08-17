@@ -1087,11 +1087,14 @@ component db redis backendHost toRoomPresences toRejoinManager toJoinPartDebounc
 					show = maybe mempty mconcat $ elementText <$> child (s"{jabber:component:accept}show") p
 					priority = fromMaybe 0 $ (readZ . textToString . mconcat =<< elementText <$> child (s"{jabber:component:accept}priority") p)
 					pavailableness = availableness show priority
-				in
+				in do
+				-- We already know about this one?
+				exists <- fmap (fromMaybe False . hush) $ Redis.runRedis redis $ Redis.hexists (encodeUtf8 $ bareTxt from) (encodeUtf8 $ maybe mempty strResource $ jidResource from)
 				-- Caps?
-				case (XML.attributeText (s"ver") =<< caps, XML.attributeText (s"node") =<< caps) of
+				case (exists, XML.attributeText (s"ver") =<< caps, XML.attributeText (s"node") =<< caps) of
+					(True, _, _) -> log "IGNOREAVAIL" from
 				-- Yes: write ver to <barejid>/resource and <cheoagramjid>/resource
-					(Just ver, Just node) -> do
+					(_, Just ver, Just node) -> do
 						let bver = Base64.decodeLenient $ encodeUtf8 ver
 						let val = LZ.toStrict $ Builder.toLazyByteString (Builder.word16BE pavailableness ++ Builder.byteString bver)
 						Right exists <- Redis.runRedis redis $ do
