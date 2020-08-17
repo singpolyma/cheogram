@@ -1033,7 +1033,8 @@ componentStanza _ _ _ _ _ _ _ _ (ReceivedIQ (iq@IQ { iqType = IQGet, iqFrom = Ju
 			iqType = IQResult,
 			iqPayload = Nothing
 		}]
-componentStanza db maybeSmsJid _ _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = typ, iqFrom = Just from })) = do
+componentStanza db maybeSmsJid _ _ _ _ _ componentJid (ReceivedIQ (iq@IQ { iqType = typ, iqFrom = Just from }))
+	| fmap strResource (jidResource =<< iqTo iq) /= Just (s"capQuery") = do
 	let resourceSuffix = maybe mempty (s"/"++) $ fmap strResource (jidResource from)
 	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
 	case (fmap fromString maybeRoute, parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
