@@ -1289,7 +1289,7 @@ groupTextPorcelein host m@(Message { messagePayloads = p, messageFrom = Just fro
 		Just $ m {
 			messageTo = Just to,
 			messageFrom = parseJID (fromString (intercalate "," (sort tels)) ++ (s"@") ++ host),
-			messagePayloads = body { elementNodes = (NodeContent $ ContentText $ s"(") : (NodeContent $ ContentText fromTel) : (NodeContent $ ContentText $ s") ") : elementNodes body } :
+			messagePayloads = body { elementNodes = (NodeContent $ ContentText $ s"<xmpp:") : (NodeContent $ ContentText fromTel) : (NodeContent $ ContentText $ s"@") : (NodeContent $ ContentText host) : (NodeContent $ ContentText $ s"> ") : elementNodes body } :
 				filter (`notElem` [addresses, body]) p
 		}
 groupTextPorcelein _ _ = Nothing
