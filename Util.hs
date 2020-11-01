@@ -92,7 +92,8 @@ sanitizeSipLocalpart localpart
 	candidate = fst $ T.breakOn (s"@") $ unescapeJid localpart
 
 showAvailableness :: String -> Word8
-showAvailableness "chat" = 4
+showAvailableness "chat" = 5
+showAvailableness ""     = 4
 showAvailableness "away" = 3
 showAvailableness "dnd"  = 2
 showAvailableness "xa"   = 1
