@@ -19,6 +19,8 @@ import System.Random (Random(randomR), getStdRandom)
 import System.Random.Shuffle (shuffleM)
 import Data.Digest.Pure.SHA (sha1, bytestringDigest)
 import System.IO.Unsafe (unsafePerformIO)
+import Network.StatsD (openStatsD, StatsD)
+import qualified Network.StatsD as StatsD
 
 import "monads-tf" Control.Monad.Error (catchError) -- ick
 import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, attributeContent, hasAttribute, nameNamespace)
@@ -1059,9 +1061,12 @@ participantJid payloads =
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
-component db redis backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
+component db redis statsd backendHost toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
 	thread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
+
+		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaTo stanza)
+		liftIO $ StatsD.push statsd [StatsD.stat ["stanzas", "out" ++ tags] 1 "c" Nothing]
 
 		case (stanzaFrom stanza, stanzaTo stanza) of
 			(Just from, Just to)
@@ -1078,6 +1083,8 @@ component db redis backendHost toRoomPresences toRejoinManager toJoinPartDebounc
 
 	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread thread)) $ forever $ do
 		stanza <- getStanza
+		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaFrom (receivedStanza stanza))
+		liftIO $ StatsD.push statsd [StatsD.stat ["stanzas", "in" ++ tags] 1 "c" Nothing]
 		liftIO $ forkIO $ case stanza of
 			(ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
 				| Just returnFrom <- parseJID (bareTxt to ++ s"/capsQuery") ->
@@ -1807,7 +1814,8 @@ data Config = Config {
 	s5bAdvertise :: ServerConfig,
 	jingleStore :: FilePath,
 	jingleStoreURL :: Text,
-	redis :: Redis.ConnectInfo
+	redis :: Redis.ConnectInfo,
+	statsd :: ServerConfig
 } deriving (Dhall.Generic, Dhall.Interpret, Show)
 
 instance Dhall.Interpret JID where
@@ -1855,7 +1863,7 @@ main = do
 				mapM_ putStanza =<< registerToGateway componentJid gatewayJid (fromString did) (fromString password)
 				liftIO $ threadDelay 1000000
 		[config] -> do
-			(Config componentJid (ServerConfig host port) secret backendHost rawdid registrationJid conferences s5bListenOn (ServerConfig s5bhost s5bport) jingleStore jingleStoreURL redisConnectInfo) <- Dhall.input Dhall.auto (fromString config)
+			(Config componentJid (ServerConfig host port) secret backendHost rawdid registrationJid conferences s5bListenOn (ServerConfig s5bhost s5bport) jingleStore jingleStoreURL redisConnectInfo (ServerConfig statsdHost statsdPort)) <- Dhall.input Dhall.auto (fromString config)
 			log "" "Starting..."
 			let Just did = normalizeTel rawdid
 			db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
@@ -1864,6 +1872,8 @@ main = do
 			sendToComponent <- atomically newTChan
 			toRoomPresences <- atomically newTChan
 			toRejoinManager <- atomically newTChan
+
+			statsd <- openStatsD statsdHost (show statsdPort) ["cheogram"]
 
 			void $ forkIO $ joinPartDebouncer db backendHost (atomically . writeTChan sendToComponent) componentJid toRoomPresences toJoinPartDebouncer
 			void $ forkIO $ roomPresences db toRoomPresences
@@ -1934,5 +1944,5 @@ main = do
 
 				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
 					runComponent (Server componentJid host (PortNumber port)) secret
-						(component db redis backendHost toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+						(component db redis statsd backendHost toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"

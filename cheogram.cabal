@@ -41,6 +41,7 @@ executable cheogram
                 HostAndPort,
                 HTTP,
                 http-types,
+                hstatsd,
                 jingle,
                 monad-loops,
                 monads-tf,
