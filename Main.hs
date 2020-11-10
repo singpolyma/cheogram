@@ -244,6 +244,14 @@ telDiscoInfo q id from to disco =
 			) (sort $ nub $ telDiscoFeatures ++ disco)
 	}
 
+botHelp commandListIq@(IQ { iqTo = Just to, iqFrom = Just from, iqPayload = Just payload }) =
+	mkSMS from to $ (s"Help:\n\t") ++ intercalate (s"\n\t") (map (\item ->
+		fromMaybe empty (attributeText (s"node") item) ++ s": " ++
+		fromMaybe empty (attributeText (s"name") item)
+	) items)
+	where
+	items = isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren payload
+
 commandList componentJid id from to extras =
 	(emptyIQ IQResult) {
 		iqTo = Just to,
@@ -253,9 +261,9 @@ commandList componentJid id from to extras =
 			[(s"{http://jabber.org/protocol/disco#items}node", [ContentText $ s"http://jabber.org/protocol/commands"])]
 			([
 				NodeElement $ Element (s"{http://jabber.org/protocol/disco#items}item") [
-						(s"{http://jabber.org/protocol/disco#items}jid", [ContentText $ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName]),
-						(s"{http://jabber.org/protocol/disco#items}node", [ContentText $ ConfigureDirectMessageRoute.nodeName]),
-						(s"{http://jabber.org/protocol/disco#items}name", [ContentText $ s"Configure direct message route"])
+						(s"jid", [ContentText $ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName]),
+						(s"node", [ContentText $ ConfigureDirectMessageRoute.nodeName]),
+						(s"name", [ContentText $ s"Configure direct message route"])
 				] []
 			] ++ extraItems)
 	}
@@ -678,6 +686,10 @@ componentStanza db _ _ _ _ _ _ componentJid (ReceivedMessage (m@Message { messag
 		-- TODO: only when from direct message route
 		-- TODO: only if target does not understand stanza addressing
 		return [mkStanzaRec reply]
+	| Just body <- getBody "jabber:component:accept" m,
+	  body == s"help" =
+		routeQueryOrReply db componentJid from componentJid ("CHEOGRAM%query-then-send-bot-help") queryCommandList
+			(botHelp $ commandList componentJid Nothing componentJid from [])
 	| Just _ <- getBody "jabber:component:accept" m = return [
 			mkStanzaRec $ mkSMS componentJid from (s"Instead of sending messages to " ++ formatJID componentJid ++ s" directly, you can SMS your contacts by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs.  Or, for support, come talk to us in xmpp:discuss@conference.soprani.ca?join")
 		]
@@ -985,6 +997,15 @@ componentStanza db _ _ _ _ _ _ componentJid (ReceivedIQ iq@(IQ { iqType = typ, i
 		else do
 			let items = isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren p
 			return [mkStanzaRec $ commandList componentJid iqId componentJid routeTo items]
+componentStanza db _ _ _ _ _ _ componentJid (ReceivedIQ iq@(IQ { iqType = typ, iqTo = Just to@(JID { jidNode = Just toNode }), iqPayload = Just p }))
+	| typ `elem` [IQResult, IQError],
+	  Just (s"CHEOGRAM%query-then-send-bot-help") == (strResource <$> jidResource to),
+	  Just routeTo <- parseJID (unescapeJid (strNode toNode)) =
+		if typ == IQError then do
+			return [mkStanzaRec $ botHelp $ commandList componentJid Nothing componentJid routeTo []]
+		else do
+			let items = isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren p
+			return [mkStanzaRec $ botHelp $ commandList componentJid Nothing componentJid routeTo items]
 componentStanza db _ _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to@(JID { jidNode = Just toNode }), iqFrom = Just from, iqPayload = Just p }))
 	| Just idAndResource <- T.stripPrefix (s"CHEOGRAM%query-then-send-ack%") . strResource =<< jidResource to,
 	  Just (messageId, resource) <- readZ $ T.unpack $ unescapeJid idAndResource,
