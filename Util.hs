@@ -157,6 +157,7 @@ discoCapsIdentities query =
 
 discoVars :: XML.Element -> [Text]
 discoVars query =
+	sort $
 	mapMaybe (XML.attributeText (s"var")) $
 	XML.isNamed (s"{http://jabber.org/protocol/disco#info}feature") =<<
 		XML.elementChildren query
