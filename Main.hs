@@ -160,7 +160,7 @@ forkXMPP kid = do
 
 nickFor db jid existingRoom
 	| fmap bareTxt existingRoom == Just bareFrom = return $ fromMaybe (fromString "nonick") resourceFrom
-	| Just tel <- normalizeTel =<< strNode <$> jidNode jid = do
+	| Just tel <- mfilter isE164 (strNode <$> jidNode jid) = do
 		mnick <- maybe (return Nothing) (TC.runTCM .TC.get db) (tcKey jid "nick")
 		case mnick of
 			Just nick -> return (tel <> fromString " \"" <> fromString nick <> fromString "\"")
@@ -1348,9 +1348,12 @@ localpartToURI localpart
 	where
 	result = Just (s"sms:" ++ localpart)
 
+isE164 fullTel
+	| Just ('+',e164) <- T.uncons fullTel = T.all isDigit e164
+	| otherwise = False
+
 normalizeTel fullTel
-	| Just ('+',e164) <- T.uncons fullTel,
-	  T.all isDigit e164 = Just fullTel
+	| isE164 fullTel = Just fullTel
 	| T.length tel == 10 = Just (s"+1" ++ tel)
 	| T.length tel == 11, s"1" `T.isPrefixOf` tel = Just (T.cons '+' tel)
 	| T.length tel == 5 || T.length tel == 6 = Just (tel ++ s";phone-context=ca-us.phone-context.soprani.ca")
