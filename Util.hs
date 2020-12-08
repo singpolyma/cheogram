@@ -2,6 +2,7 @@ module Util where
 
 import Prelude ()
 import BasicPrelude
+import Control.Concurrent.STM (STM, atomically)
 import Data.Word (Word16)
 import Data.Bits (shiftL, (.|.))
 import Data.Char (isDigit)
@@ -34,6 +35,9 @@ s = fromString
 
 fromIO_ :: (Unexceptional m) => IO a -> m a
 fromIO_ = fmap (either absurd id) . UIO.fromIO' (error . show)
+
+atomicUIO :: (Unexceptional m) => STM a -> m a
+atomicUIO = fromIO_ . atomically
 
 escapeJid :: Text -> Text
 escapeJid txt = mconcat result
