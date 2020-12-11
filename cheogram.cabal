@@ -48,6 +48,7 @@ executable cheogram
                 network,
                 network-uri,
                 network-protocol-xmpp >= 0.4.9,
+                pcre-light,
                 random,
                 random-shuffle,
                 SHA,

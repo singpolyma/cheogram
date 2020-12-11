@@ -42,6 +42,7 @@ import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Builder as Builder
 import qualified Database.TokyoCabinet as TC
 import qualified Database.Redis as Redis
+import qualified Text.Regex.PCRE.Light as PCRE
 import Network.Protocol.XMPP as XMPP -- should import qualified
 import Network.Protocol.XMPP.Internal -- should import qualified
 
@@ -414,10 +415,24 @@ componentMessage db componentJid m@(Message { messageFrom = Just from, messageTo
 				(deliveryReceipt (fromMaybe mempty $ messageID m) to from)
 		[] -> return []
 
-	fmap (++ack) $ toRouteOrFallback db componentJid bareFrom resourceFrom smsJid strippedM $ do
-		nick <- nickFor db from existingRoom
-		let txt = mconcat [fromString "(", nick, fromString " whispers) ", strippedBody]
-		return [mkStanzaRec $ mkSMS componentJid smsJid txt]
+	fmap (++ack) $ toRouteOrFallback db componentJid bareFrom resourceFrom smsJid strippedM $
+		case PCRE.match autolinkRegex (encodeUtf8 body) [] of
+			Just _ -> do
+				log "WHISPER URL" m
+				return [mkStanzaRec $ m {
+					messageFrom = Just to,
+					messageTo = Just from,
+					messageType = MessageError,
+					messagePayloads = messagePayloads m ++ [
+						Element (fromString "{jabber:component:accept}error")
+						[(fromString "{jabber:component:accept}type", [ContentText $ fromString "auth"])]
+						[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}forbidden") [] []]
+					]
+				}]
+			Nothing -> do
+				nick <- nickFor db from existingRoom
+				let txt = mconcat [fromString "(", nick, fromString " whispers) ", strippedBody]
+				return [mkStanzaRec $ mkSMS componentJid smsJid txt]
 	where
 	strippedM = mapBody (const strippedBody) m
 	strippedBody = stripOtrWhitespace body
@@ -1816,7 +1831,7 @@ joinPartDebouncer db backendHost sendToComponent componentJid toRoomPresences to
 adhocBotRunCommand :: (UIO.Unexceptional m) => JID -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> JID -> Text -> [Element] -> m ()
 adhocBotRunCommand componentJid routeFrom sendMessage sendIQ from body cmdEls = do
 	let (nodes, cmds) = unzip $ mapMaybe (\el -> (,) <$> attributeText (s"node") el <*> pure el) cmdEls
-	case snd <$> (find (\(prefixes, _) -> Set.member body prefixes) $ traceShowId $ zip (uniquePrefix nodes) cmds) of
+	case snd <$> (find (\(prefixes, _) -> Set.member body prefixes) $ zip (uniquePrefix nodes) cmds) of
 		Just cmd -> do
 			let cmdIQ = (emptyIQ IQSet) {
 				iqFrom = Just routeFrom,

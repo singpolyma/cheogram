@@ -21,6 +21,7 @@ import qualified Data.Text.Encoding as T
 import qualified Network.Protocol.XMPP as XMPP
 import qualified Data.Attoparsec.Text as Atto
 import qualified Data.ByteString.Lazy as LZ
+import qualified Text.Regex.PCRE.Light as PCRE
 
 instance Unexceptional XMPP.XMPP where
 	lift = liftIO . UIO.lift
@@ -74,6 +75,9 @@ unescapeJid txt = fromString result
 	unescapes = map (\(str, c) -> Atto.string (fromString str) *> pure c) [
 			("20", ' '), ("22", '"'), ("26", '&'), ("27", '\''), ("2f", '/'), ("3a", ':'), ("3c", '<'), ("3e", '>'), ("40", '@'), ("5c", '\\')
 		]
+
+autolinkRegex :: PCRE.Regex
+autolinkRegex = PCRE.compile (encodeUtf8 $ s"((http|https)://)?([a-z0-9-]+\\.)?[a-z0-9-]+(\\.[a-z]{2,6}){1,3}(/[a-z0-9.,_/~#&=;%+?-]*)?") [PCRE.caseless, PCRE.dotall]
 
 sanitizeSipLocalpart :: Text -> Maybe Text
 sanitizeSipLocalpart localpart
