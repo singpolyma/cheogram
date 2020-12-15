@@ -1089,7 +1089,7 @@ participantJid payloads =
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
-component db redis statsd backendHost adhocBotIQReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
+component db redis statsd backendHost did adhocBotIQReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
 	thread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 
@@ -1175,7 +1175,8 @@ component db redis statsd backendHost adhocBotIQReceiver adhocBotMessage toRoomP
 							log "backend error" stanza
 						(ReceivedMessage m)
 							| Just txt <- getBody "jabber:component:accept" m,
-							  Just cheoJid <- mapToComponent from ->
+							  Just cheoJid <- mapToComponent from,
+							  fmap strNode (jidNode from) /= Just did ->
 								mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
 						_ -> log "backend no match" stanza
 			(Just from, Just to, Nothing, Just localpart, ReceivedMessage m)
@@ -2038,5 +2039,5 @@ main = do
 
 				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
 					runComponent (Server componentJid host (PortNumber port)) secret
-						(component db redis statsd backendHost adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+						(component db redis statsd backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
