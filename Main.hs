@@ -2006,9 +2006,9 @@ main = do
 			jingleHandler <- UIO.runEitherIO $ Jingle.setupJingleHandlers jingleStore s5bListenOn (fromString s5bhost, s5bport)
 				(log "JINGLE")
 				(\iq@(IQ { iqPayload = Just jingle }) path ->
-					forM_ (isNamed (s"{urn:xmpp:jingle:1}content") =<< elementChildren jingle) $ \content ->
-					let fileDesc = mfilter (/=mempty) $ fmap (mconcat . elementText) $ headZ (isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}desc") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}file") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}description") =<< elementChildren content) in
-					(fromIO_ (mapM_ (atomically . writeTChan sendToComponent) =<< componentStanza db (mapToBackend backendHost =<< stanzaTo iq) [registrationJid] (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid (
+					forM_ (isNamed (s"{urn:xmpp:jingle:1}content") =<< elementChildren jingle) $ \content -> do
+					let fileDesc = mfilter (/=mempty) $ fmap (mconcat . elementText) $ headZ (isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}desc") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}file") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}description") =<< elementChildren content)
+					fromIO_ (mapM_ (atomically . writeTChan sendToComponent) =<< componentStanza db (mapToBackend backendHost =<< stanzaTo iq) [registrationJid] (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid (
 						let url = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) in
 						ReceivedMessage $ (emptyMessage MessageNormal) {
 							messageFrom = iqFrom iq,
@@ -2020,7 +2020,7 @@ main = do
 								] ++ (maybe [] (\desc -> pure $ NodeElement $ Element (s"{jabber:x:oob}desc") [] [NodeContent $ ContentText desc]) fileDesc))
 							]
 						}
-					)) >>) $ -- TODO: need to end session for Conversations
+						))
 					fromIO_ $ atomically $ writeTChan sendToComponent $ mkStanzaRec $ (emptyIQ IQSet) {
 						iqTo = iqFrom iq,
 						iqFrom = iqTo iq,
@@ -2031,7 +2031,22 @@ main = do
 								NodeElement $ Element (s"{urn:xmpp:jingle:apps:file-transfer:5}received")
 								[(s"creator", fromMaybe [] $ attributeContent (s"creator") content), (s"name", fromMaybe [] $ attributeContent (s"name") content)] []
 							]
-					}
+						}
+					fromIO_ $ atomically $ writeTChan sendToComponent $ mkStanzaRec $ (emptyIQ IQSet) {
+						iqTo = iqFrom iq,
+						iqFrom = iqTo iq,
+						iqID = Just $ s"id-session-terminate",
+						iqPayload = Just $ Element
+							(s"{urn:xmpp:jingle:1}jingle")
+							[(s"action", [s"session-terminate"]), (s"sid", [ContentText $ fromMaybe mempty $ attributeText (s"sid") jingle])]
+							[
+								NodeElement $ Element (s"{urn:xmpp:jingle:1}reason")
+								[]
+								[
+									NodeElement $ Element (s"{urn:xmpp:jingle:1}success") [] []
+								]
+							]
+						}
 				)
 
 			forever $ do
