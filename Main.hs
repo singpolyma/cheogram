@@ -27,7 +27,7 @@ import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Name(
 import qualified UnexceptionalIO as UIO
 import qualified Data.Set as Set
 import qualified Dhall
-import qualified Dhall.Core as Dhall hiding (Type)
+import qualified Dhall.Core as Dhall hiding (Decoder)
 import qualified Jingle
 import qualified Network.Socket as Socket
 import qualified Data.CaseInsensitive as CI
@@ -1891,7 +1891,7 @@ openTokyoCabinet pth = TC.runTCM $ do
 	True <- TC.open db pth [TC.OREADER, TC.OWRITER, TC.OCREAT]
 	return db
 
-data ServerConfig = ServerConfig { host :: Socket.HostName, port :: Socket.PortNumber } deriving (Dhall.Generic, Dhall.Interpret, Show)
+data ServerConfig = ServerConfig { host :: Socket.HostName, port :: Socket.PortNumber } deriving (Dhall.Generic, Dhall.FromDhall, Show)
 
 data Config = Config {
 	componentJid :: JID,
@@ -1907,36 +1907,37 @@ data Config = Config {
 	jingleStoreURL :: Text,
 	redis :: Redis.ConnectInfo,
 	statsd :: ServerConfig
-} deriving (Dhall.Generic, Dhall.Interpret, Show)
+} deriving (Dhall.Generic, Dhall.FromDhall, Show)
 
-instance Dhall.Interpret JID where
-	autoWith _ = Dhall.Type {
-			Dhall.extract = \(Dhall.TextLit (Dhall.Chunks _ txt)) -> parseJID txt,
-			Dhall.expected = Dhall.Text
+instance Dhall.FromDhall JID where
+	autoWith _ = Dhall.Decoder {
+			Dhall.extract = \(Dhall.TextLit (Dhall.Chunks _ txt)) ->
+				maybe (Dhall.extractError $ s"Invalid JID") pure $ parseJID txt,
+			Dhall.expected = pure Dhall.Text
 		}
 
-instance Dhall.Interpret Socket.PortNumber where
-	autoWith _ = Dhall.Type {
-			Dhall.extract = \(Dhall.NaturalLit nat) -> Just $ fromIntegral nat,
-			Dhall.expected = Dhall.Natural
+instance Dhall.FromDhall Socket.PortNumber where
+	autoWith _ = Dhall.Decoder {
+			Dhall.extract = \(Dhall.NaturalLit nat) -> pure $ fromIntegral nat,
+			Dhall.expected = pure Dhall.Natural
 		}
 
-instance Dhall.Interpret Socket.SockAddr where
-	autoWith _ = Dhall.Type {
-			Dhall.extract = (\(Dhall.TextLit (Dhall.Chunks _ txt)) -> do
+instance Dhall.FromDhall Socket.SockAddr where
+	autoWith _ = Dhall.Decoder {
+			Dhall.extract = (\(Dhall.TextLit (Dhall.Chunks _ txt)) -> maybe (Dhall.extractError $ s"Invalid Socket Address") pure $ do
 				Just (host, Just port) <- return $ maybeHostAndPort (textToString txt)
 				-- This is not a great idea, but I'm lazy today and I really just want to parse IP addresses, which is a pure operation
 				unsafePerformIO $ fmap (fmap Socket.addrAddress . headZ) $ Socket.getAddrInfo Nothing (Just host) (Just port)
 			),
-			Dhall.expected = Dhall.Text
+			Dhall.expected = pure Dhall.Text
 		}
 
-instance Dhall.Interpret Redis.ConnectInfo where
-	autoWith _ = Dhall.Type {
+instance Dhall.FromDhall Redis.ConnectInfo where
+	autoWith _ = Dhall.Decoder {
 			Dhall.extract = (\(Dhall.TextLit (Dhall.Chunks _ txt)) ->
-				hush $ RedisURL.parseConnectInfo $ textToString txt
+				either (Dhall.extractError . tshow) pure $ RedisURL.parseConnectInfo $ textToString txt
 			),
-			Dhall.expected = Dhall.Text
+			Dhall.expected = pure Dhall.Text
 		}
 
 main :: IO ()
