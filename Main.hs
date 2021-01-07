@@ -1013,6 +1013,12 @@ componentStanza db _ _ _ _ _ _ _ componentJid (ReceivedIQ iq@(IQ { iqType = typ,
 		else do
 			let items = isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren p
 			return [mkStanzaRec $ commandList componentJid iqId componentJid routeTo items]
+componentStanza db _ _ _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQError, iqTo = Just to@(JID { jidNode = Just toNode }), iqFrom = Just from }))
+	| fmap strResource (jidResource to) == Just (s"CHEOGRAM%query-then-send-presence"),
+	  Just routeTo <- parseJID (unescapeJid (strNode toNode)),
+	  Just fromNode <- jidNode from,
+	  Just routeFrom <- parseJID (strNode fromNode ++ s"@" ++ formatJID componentJid) =
+		return [ mkStanzaRec $ telAvailable routeFrom routeTo [] ]
 componentStanza db _ _ _ _ _ _ _ componentJid (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to@(JID { jidNode = Just toNode }), iqFrom = Just from, iqPayload = Just p }))
 	| Just idAndResource <- T.stripPrefix (s"CHEOGRAM%query-then-send-ack%") . strResource =<< jidResource to,
 	  Just (messageId, resource) <- readZ $ T.unpack $ unescapeJid idAndResource,
