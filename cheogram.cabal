@@ -35,7 +35,7 @@ executable cheogram
                 case-insensitive,
                 containers,
                 cryptonite,
-                dhall == 1.37.1,
+                dhall >= 1.33 && < 1.38,
                 errors,
                 hedis,
                 HostAndPort,
