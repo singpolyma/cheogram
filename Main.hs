@@ -1095,8 +1095,8 @@ participantJid payloads =
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
-component db redis statsd backendHost did adhocBotIQReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
-	thread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
+component db redis statsd backendHost did adhocBotIQReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
+	sendThread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 
 		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaTo stanza)
@@ -1115,8 +1115,11 @@ component db redis statsd backendHost did adhocBotIQReceiver adhocBotMessage toR
 
 		putStanza stanza
 
-	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread thread)) $ forever $ do
-		stanza <- getStanza
+	recvThread <- forkXMPP $ forever $ flip catchError (log "component read EXCEPTION") $
+		(atomicUIO . writeTChan toStanzaProcessor) =<< getStanza
+
+	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread sendThread >> killThread recvThread)) $ forever $ do
+		stanza <- atomicUIO $ readTChan toStanzaProcessor
 		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaFrom (receivedStanza stanza))
 		liftIO $ StatsD.push statsd [StatsD.stat ["stanzas", "in" ++ tags] 1 "c" Nothing]
 		liftIO $ forkIO $ case stanza of
@@ -1968,6 +1971,7 @@ main = do
 			redis <- Redis.checkedConnect redisConnectInfo
 			toJoinPartDebouncer <- atomically newTChan
 			sendToComponent <- atomically newTChan
+			toStanzaProcessor <- atomically newTChan
 			toRoomPresences <- atomically newTChan
 			toRejoinManager <- atomically newTChan
 
@@ -2015,7 +2019,7 @@ main = do
 				(\iq@(IQ { iqPayload = Just jingle }) path ->
 					forM_ (isNamed (s"{urn:xmpp:jingle:1}content") =<< elementChildren jingle) $ \content -> do
 					let fileDesc = mfilter (/=mempty) $ fmap (mconcat . elementText) $ headZ (isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}desc") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}file") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}description") =<< elementChildren content)
-					fromIO_ (mapM_ (atomically . writeTChan sendToComponent) =<< componentStanza db (mapToBackend backendHost =<< stanzaTo iq) [registrationJid] (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid (
+					atomicUIO $ writeTChan toStanzaProcessor $
 						let url = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) in
 						ReceivedMessage $ (emptyMessage MessageNormal) {
 							messageFrom = iqFrom iq,
@@ -2027,7 +2031,6 @@ main = do
 								] ++ (maybe [] (\desc -> pure $ NodeElement $ Element (s"{jabber:x:oob}desc") [] [NodeContent $ ContentText desc]) fileDesc))
 							]
 						}
-						))
 					fromIO_ $ atomically $ writeTChan sendToComponent $ mkStanzaRec $ (emptyIQ IQSet) {
 						iqTo = iqFrom iq,
 						iqFrom = iqTo iq,
@@ -2061,5 +2064,5 @@ main = do
 
 				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
 					runComponent (Server componentJid host (PortNumber port)) secret
-						(component db redis statsd backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+						(component db redis statsd backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
