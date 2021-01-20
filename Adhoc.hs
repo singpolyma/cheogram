@@ -197,7 +197,8 @@ adhocBotRunCommand componentJid routeFrom sendMessage sendIQ getMessage from bod
 				  Just payload <- iqPayload resultIQ,
 				  Just sessionid <- attributeText (s"sessionid") payload,
 				  [form] <- isNamed (s"{jabber:x:data}x") =<< elementChildren payload -> do
-					returnForm <- adhocBotAnswerForm componentJid sendMessage getMessage from form
+					let threadedMessage msg = msg { messagePayloads = (Element (s"thread") [] [NodeContent $ ContentText sessionid]) : messagePayloads msg }
+					returnForm <- adhocBotAnswerForm componentJid (sendMessage . threadedMessage) getMessage from form
 					let actions = listToMaybe $ isNamed(s"{http://jabber.org/protocol/commands}actions") =<< elementChildren payload
 					-- The standard says if actions is present, with no "execute" attribute, that the default is "next"
 					-- But if there is no actions, the default is "execute"
