@@ -85,6 +85,20 @@ untilParse getText onFail parser = do
 			atomicUIO onFail
 			untilParse getText onFail parser
 
+adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> STM XMPP.Message -> JID -> Element -> m [Element]
+adhocBotAnswerTextSingle componentJid sendMessage getMessage from field = do
+	case attributeText (s"var") field of
+		Just var -> do
+			let label = fromMaybe (s"Input") $ attributeText (s"label") field
+			atomicUIO $ sendMessage $ mkSMS componentJid from label
+			value <- atomicUIO getMessage
+			case getBody "jabber:component:accept" value of
+				Just body -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
+						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText body]
+					]]
+				Nothing -> return []
+		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
+
 adhocBotAnswerListMulti :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> STM XMPP.Message -> JID -> Element -> m [Element]
 adhocBotAnswerListMulti componentJid sendMessage getMessage from field = do
 	case attributeText (s"var") field of
@@ -138,8 +152,18 @@ adhocBotAnswerForm componentJid sendMessage getMessage from form = do
 				| elementName field == s"{jabber:x:data}field",
 				  attributeText (s"type") field == Just (s"list-multi") ->
 					adhocBotAnswerListMulti componentJid sendMessage getMessage from field
-			-- XXX: Should I pass a logger in here?
-			c -> fromIO_ (print c) >> return []
+			_
+				| elementName field == s"{jabber:x:data}field",
+				  attributeText (s"type") field `elem` [Just (s"text-single"), Nothing] ->
+					-- The default if a type isn't specified is text-single
+					adhocBotAnswerTextSingle componentJid sendMessage getMessage from field
+			_
+				| elementName field == s"{jabber:x:data}field" -> do
+					-- The spec says a field type we don't understand should be treated as text-single
+					log "ADHOC BOT UNKNOWN FIELD" field
+					adhocBotAnswerTextSingle componentJid sendMessage getMessage from field
+			-- There can be other things in here that aren't fields, and we want to ignore them completely
+			_ -> return []
 	return $ Element (s"{jabber:x:data}x") [(s"type", [ContentText $ s"submit"])] $ NodeElement <$> mconcat fields
 
 optionText :: Element -> Text
