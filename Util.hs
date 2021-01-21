@@ -9,7 +9,7 @@ import Data.Char (isDigit)
 import Control.Applicative (many)
 import Control.Error (hush)
 import Data.Time (getCurrentTime)
-import Data.XML.Types as XML (Name, Element(..), Node(NodeElement), isNamed, elementText, elementChildren, attributeText)
+import Data.XML.Types as XML (Name(Name), Element(..), Node(NodeElement, NodeContent), Content(ContentText), isNamed, elementText, elementChildren, attributeText)
 import Crypto.Random (getSystemDRG, withRandomBytes)
 import Data.ByteString.Base58 (bitcoinAlphabet, encodeBase58)
 import Data.Digest.Pure.SHA (sha1, bytestringDigest)
@@ -124,9 +124,11 @@ parsePhoneContext txt = hush $ Atto.parseOnly (
 		<* Atto.endOfInput
 	) txt
 
+bareTxt :: XMPP.JID -> Text
 bareTxt (XMPP.JID (Just node) domain _) = mconcat [XMPP.strNode node, s"@", XMPP.strDomain domain]
 bareTxt (XMPP.JID Nothing domain _) = XMPP.strDomain domain
 
+getFormField :: XML.Element -> Text -> Maybe Text
 getFormField form var =
 		listToMaybe $ mapMaybe (\node ->
 			case node of
@@ -206,3 +208,13 @@ discoToCaps query =
 discoToCapsHash :: XML.Element -> ByteString
 discoToCapsHash query =
 	LZ.toStrict $ bytestringDigest $ sha1 $ LZ.fromStrict $ T.encodeUtf8 $ discoToCaps query
+
+getBody :: String -> XMPP.Message -> Maybe Text
+getBody ns = listToMaybe . fmap (mconcat . XML.elementText) . (XML.isNamed (XML.Name (fromString "body") (Just $ fromString ns) Nothing) <=< XMPP.messagePayloads)
+
+mkSMS :: XMPP.JID -> XMPP.JID -> Text -> XMPP.Message
+mkSMS from to txt = (XMPP.emptyMessage XMPP.MessageChat) {
+	XMPP.messageTo = Just to,
+	XMPP.messageFrom = Just from,
+	XMPP.messagePayloads = [XML.Element (fromString "{jabber:component:accept}body") [] [XML.NodeContent $ XML.ContentText txt]]
+}
