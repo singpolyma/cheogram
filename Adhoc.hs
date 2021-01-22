@@ -16,6 +16,7 @@ import qualified Data.UUID as UUID ( toString )
 import qualified Data.UUID.V1 as UUID ( nextUUID )
 import qualified Database.TokyoCabinet as TC
 import qualified UnexceptionalIO as UIO
+import qualified Data.Bool.HT as HT
 
 import StanzaRec
 import UniquePrefix
@@ -141,29 +142,26 @@ adhocBotAnswerListSingle componentJid sendMessage getMessage from field = do
 adhocBotAnswerForm :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> STM XMPP.Message -> JID -> Element -> m Element
 adhocBotAnswerForm componentJid sendMessage getMessage from form = do
 	fields <- forM (elementChildren form) $ \field -> do
-		case field of
-			_
-				| elementName field == s"{jabber:x:data}instructions" -> atomicUIO (sendMessage $ mkSMS componentJid from $ mconcat $ elementText field) >> return []
-			_
-				| elementName field == s"{jabber:x:data}field",
-				  attributeText (s"type") field == Just (s"list-single") ->
-					adhocBotAnswerListSingle componentJid sendMessage getMessage from field
-			_
-				| elementName field == s"{jabber:x:data}field",
-				  attributeText (s"type") field == Just (s"list-multi") ->
-					adhocBotAnswerListMulti componentJid sendMessage getMessage from field
-			_
-				| elementName field == s"{jabber:x:data}field",
-				  attributeText (s"type") field `elem` [Just (s"text-single"), Nothing] ->
-					-- The default if a type isn't specified is text-single
-					adhocBotAnswerTextSingle componentJid sendMessage getMessage from field
-			_
-				| elementName field == s"{jabber:x:data}field" -> do
-					-- The spec says a field type we don't understand should be treated as text-single
-					log "ADHOC BOT UNKNOWN FIELD" field
-					adhocBotAnswerTextSingle componentJid sendMessage getMessage from field
+		flip HT.select [
+			( elementName field == s"{jabber:x:data}instructions",
+				atomicUIO (sendMessage $ mkSMS componentJid from $ mconcat $ elementText field) >> return []),
+			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field == Just (s"list-single"),
+				adhocBotAnswerListSingle componentJid sendMessage getMessage from field),
+			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field == Just (s"list-multi"),
+				adhocBotAnswerListMulti componentJid sendMessage getMessage from field),
+			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field `elem` [Just (s"text-single"), Nothing],
+				-- The default if a type isn't specified is text-single
+				adhocBotAnswerTextSingle componentJid sendMessage getMessage from field),
+			( elementName field == s"{jabber:x:data}field",
+				-- The spec says a field type we don't understand should be treated as text-single
+				log "ADHOC BOT UNKNOWN FIELD" field >>
+				adhocBotAnswerTextSingle componentJid sendMessage getMessage from field
+			)]
 			-- There can be other things in here that aren't fields, and we want to ignore them completely
-			_ -> return []
+			(return [])
 	return $ Element (s"{jabber:x:data}x") [(s"type", [ContentText $ s"submit"])] $ NodeElement <$> mconcat fields
 
 optionText :: Element -> Text

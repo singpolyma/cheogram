@@ -60,6 +60,7 @@ executable cheogram
                 uuid,
                 unexceptionalio,
                 unexceptionalio-trans,
+                utility-ht,
                 xml-types
 
 source-repository head
