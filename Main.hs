@@ -10,7 +10,7 @@ import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import Data.Traversable (forM, mapM)
 import System.Environment (getArgs)
-import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe, headZ, hush)
+import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe, headZ)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
 import Network.URI (parseURI, uriPath)
@@ -25,7 +25,6 @@ import qualified Network.StatsD as StatsD
 import "monads-tf" Control.Monad.Error (catchError) -- ick
 import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, attributeContent, hasAttribute, nameNamespace)
 import qualified UnexceptionalIO as UIO
-import qualified Data.Set as Set
 import qualified Dhall
 import qualified Dhall.Core as Dhall hiding (Decoder)
 import qualified Jingle
@@ -44,32 +43,16 @@ import qualified Database.TokyoCabinet as TC
 import qualified Database.Redis as Redis
 import qualified Text.Regex.PCRE.Light as PCRE
 import Network.Protocol.XMPP as XMPP -- should import qualified
-import Network.Protocol.XMPP.Internal -- should import qualified
 
 import Util
-import UniquePrefix
 import IQManager
 import qualified RedisURL
 import qualified ConfigureDirectMessageRoute
+import Adhoc (adhocBotSession, commandList, queryCommandList)
+import StanzaRec
 
 instance Ord JID where
 	compare x y = compare (show x) (show y)
-
-data StanzaRec = StanzaRec (Maybe JID) (Maybe JID) (Maybe Text) (Maybe Text) [Element] Element deriving (Show)
-mkStanzaRec x = StanzaRec (stanzaTo x) (stanzaFrom x) (stanzaID x) (stanzaLang x) (stanzaPayloads x) (stanzaToElement x)
-instance Stanza StanzaRec where
-	stanzaTo (StanzaRec to _ _ _ _ _) = to
-	stanzaFrom (StanzaRec _ from _ _ _ _) = from
-	stanzaID (StanzaRec _ _ id _ _ _) = id
-	stanzaLang (StanzaRec _ _ _ lang _ _) = lang
-	stanzaPayloads (StanzaRec _ _ _ _ payloads _) = payloads
-	stanzaToElement (StanzaRec _ _ _ _ _ element) = element
-
-mkSMS from to txt = (emptyMessage MessageChat) {
-	messageTo = Just to,
-	messageFrom = Just from,
-	messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText txt]]
-}
 
 tcKey jid key = fmap (\node -> (T.unpack $ strNode node) <> "\0" <> key) (jidNode jid)
 tcGetJID db jid key = liftIO $ case tcKey jid key of
@@ -81,8 +64,6 @@ tcPut db cheoJid key val = liftIO $ do
 	True <- TC.runTCM (TC.put db tck val)
 	return ()
 
-getBody ns = listToMaybe . fmap (mconcat . elementText) . (isNamed (Name (fromString "body") (Just $ fromString ns) Nothing) <=< messagePayloads)
-
 queryDisco to from = queryDiscoWithNode Nothing to from
 
 queryDiscoWithNode node to from = do
@@ -93,19 +74,6 @@ queryDiscoWithNode node to from = do
 		iqID = uuid,
 		iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") (map (\node -> (s"{http://jabber.org/protocol/disco#info}node", [ContentText node])) $ maybeToList node) []
 	}]
-
-queryCommandList' to from =
-	(emptyIQ IQGet) {
-		iqTo = Just to,
-		iqFrom = Just from,
-		iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#items}query") [
-			(s"{http://jabber.org/protocol/disco#items}node", [ContentText $ s"http://jabber.org/protocol/commands"])
-		] []
-	}
-
-queryCommandList to from = do
-	uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
-	return [mkStanzaRec $ (queryCommandList' to from) {iqID = uuid}]
 
 fillFormField var value form = form {
 		elementNodes = map (\node ->
@@ -249,41 +217,6 @@ telDiscoInfo q id from to disco =
 				] []
 			) (sort $ nub $ telDiscoFeatures ++ disco)
 	}
-
-botHelp commandListIq@(IQ { iqTo = Just to, iqFrom = Just from, iqPayload = Just payload }) =
-	mkSMS from to $ (s"Help:\n\t") ++ intercalate (s"\n\t") (map (\item ->
-		fromMaybe mempty (attributeText (s"node") item) ++ s": " ++
-		fromMaybe mempty (attributeText (s"name") item)
-	) items)
-	where
-	items = isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren payload
-
-commandList componentJid id from to extras =
-	(emptyIQ IQResult) {
-		iqTo = Just to,
-		iqFrom = Just from,
-		iqID = id,
-		iqPayload = Just $ Element (s"{http://jabber.org/protocol/disco#items}query")
-			[(s"{http://jabber.org/protocol/disco#items}node", [ContentText $ s"http://jabber.org/protocol/commands"])]
-			([
-				NodeElement $ Element (s"{http://jabber.org/protocol/disco#items}item") [
-						(s"jid", [ContentText $ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName]),
-						(s"node", [ContentText $ ConfigureDirectMessageRoute.nodeName]),
-						(s"name", [ContentText $ s"Configure direct message route"])
-				] []
-			] ++ extraItems)
-	}
-	where
-	extraItems = map (\el ->
-			NodeElement $ el {
-				elementAttributes = map (\(aname, acontent) ->
-					if aname == s"{http://jabber.org/protocol/disco#items}jid" || aname == s"jid" then
-						(aname, [ContentText $ formatJID componentJid])
-					else
-						(aname, acontent)
-				) (elementAttributes el)
-			}
-		) extras
 
 routeQueryOrReply db componentJid from smsJid resource query reply = do
 	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
@@ -1838,61 +1771,28 @@ joinPartDebouncer db backendHost sendToComponent componentJid toRoomPresences to
 				| t == time -> sendPart cheoJid from time >> return state'
 			(_, state') -> return state'
 
-adhocBotRunCommand :: (UIO.Unexceptional m) => JID -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> JID -> Text -> [Element] -> m ()
-adhocBotRunCommand componentJid routeFrom sendMessage sendIQ from body cmdEls = do
-	let (nodes, cmds) = unzip $ mapMaybe (\el -> (,) <$> attributeText (s"node") el <*> pure el) cmdEls
-	case snd <$> (find (\(prefixes, _) -> Set.member body prefixes) $ zip (uniquePrefix nodes) cmds) of
-		Just cmd -> do
-			let cmdIQ = (emptyIQ IQSet) {
-				iqFrom = Just routeFrom,
-				iqTo = parseJID =<< (attributeText (s"jid") cmd),
-				iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") cmd])] []
-			}
-			mcmdResult <- atomicUIO =<< (UIO.lift $ sendIQ $ cmdIQ)
-			case mcmdResult of
-				Just resultIQ
-					| IQResult == iqType resultIQ,
-						Just payload <- iqPayload resultIQ,
-						[note] <- isNamed (s"{http://jabber.org/protocol/commands}note") =<< elementChildren payload ->
-						atomicUIO $ sendMessage $ mkSMS componentJid from $ mconcat $ elementText note
-					| otherwise -> atomicUIO $ sendMessage $ mkSMS componentJid from (s"Command error")
-				Nothing -> atomicUIO $ sendMessage $ mkSMS componentJid from (s"Command timed out")
-		Nothing -> atomicUIO $ sendMessage $ mkSMS componentJid from (s"Instead of sending messages to " ++ formatJID componentJid ++ s" directly, you can SMS your contacts by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs.  Or, for support, come talk to us in xmpp:discuss@conference.soprani.ca?join")
-
-adhocBotSession :: (UIO.Unexceptional m, TC.TCDB db) => db -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> XMPP.Message -> m ()
-adhocBotSession db componentJid sendMessage sendIQ message@(XMPP.Message { XMPP.messageFrom = Just from })
-	| Just body <- getBody "jabber:component:accept" message,
-	  body == s"help" = do
-		maybeRoute <- fmap (join . hush) $ UIO.fromIO $ TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-		(atomicUIO . sendMessage) =<< case parseJID =<< fmap fromString maybeRoute of
-			Just route -> do
-				mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
-				return $ botHelp $ commandList componentJid Nothing componentJid from $
-					isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren =<< maybeToList (XMPP.iqPayload =<< mfilter ((== XMPP.IQResult) . XMPP.iqType) mreply)
-			Nothing ->
-				return $ botHelp $ commandList componentJid Nothing componentJid from []
-	| Just body <- getBody "jabber:component:accept" message = do
-		maybeRoute <- fmap (join . hush) $ UIO.fromIO $ TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-		case parseJID =<< fmap fromString maybeRoute of
-			Just route -> do
-				mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
-				case (iqPayload =<< mfilter ((==IQResult) . iqType) mreply) of
-					Just reply -> adhocBotRunCommand componentJid routeFrom sendMessage sendIQ from body (elementChildren reply)
-					Nothing -> adhocBotRunCommand componentJid routeFrom sendMessage sendIQ from body (elementChildren =<< (maybeToList $ iqPayload $ commandList componentJid Nothing componentJid from []))
-			Nothing -> adhocBotRunCommand componentJid routeFrom sendMessage sendIQ from body (elementChildren =<< (maybeToList $ iqPayload $ commandList componentJid Nothing componentJid from []))
-	| otherwise =
-		atomicUIO $ sendMessage $ mkSMS componentJid from (s"Instead of sending messages to " ++ formatJID componentJid ++ s" directly, you can SMS your contacts by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs.  Or, for support, come talk to us in xmpp:discuss@conference.soprani.ca?join")
-	where
-	Just routeFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/adhocbot"
-adhocBotSession _ _ _ _ m = log "BAD ADHOC BOT MESSAGE" m
 
 adhocBotManager :: (UIO.Unexceptional m, TC.TCDB db) => db -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> (STM XMPP.Message) -> m ()
 adhocBotManager db componentJid sendMessage sendIQ messages = do
-	forever $ do
-		message <- atomicUIO messages
-		-- Lookup from map based on message from for a thread to send to
-		-- If no thread, make new one
-		UIO.fork $ adhocBotSession db componentJid sendMessage sendIQ message
+	cleanupChan <- atomicUIO newTChan
+	statefulManager cleanupChan Map.empty
+	where
+	statefulManager cleanupChan sessions = do
+		join $ atomicUIO $ (processMessage cleanupChan sessions <$> messages) <|> (cleanupSession cleanupChan sessions <$> readTChan cleanupChan)
+
+	cleanupSession cleanupChan sessions sessionToClean = statefulManager cleanupChan $! (Map.delete sessionToClean sessions)
+
+	processMessage cleanupChan sessions message = do
+		-- XXX: At some point this should not include resource, but it makes it easy to test for now
+		let key = bareTxt <$> (XMPP.stanzaFrom message)
+		sessions' <- case Map.lookup key sessions of
+			Just input -> input message >> return sessions
+			Nothing -> do
+				newChan <- atomicUIO newTChan
+				UIO.forkFinally (adhocBotSession db componentJid sendMessage sendIQ (readTChan newChan) message) (\_ -> atomicUIO $ writeTChan cleanupChan key)
+				let writer = (atomicUIO . writeTChan newChan)
+				return $ Map.insert key writer sessions
+		statefulManager cleanupChan sessions'
 
 openTokyoCabinet :: (TC.TCDB a) => String -> IO a
 openTokyoCabinet pth = TC.runTCM $ do
