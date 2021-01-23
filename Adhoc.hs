@@ -90,8 +90,13 @@ adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM
 adhocBotAnswerTextSingle componentJid sendMessage getMessage from field = do
 	case attributeText (s"var") field of
 		Just var -> do
-			let label = fromMaybe (s"Input") $ attributeText (s"label") field
-			atomicUIO $ sendMessage $ mkSMS componentJid from label
+			let lbl = fromMaybe (s"Enter text") $ label field
+			let descSuffix = maybe mempty (\dsc -> s"\n(" ++ dsc ++ s")") $
+				desc field
+			let valueSuffix = maybe mempty (\val -> s" [" ++ val ++ s"] ") $
+				mfilter (not . T.null) $ Just (fieldValue field)
+			atomicUIO $ sendMessage $ mkSMS componentJid from $
+				lbl ++ valueSuffix ++ s":" ++ descSuffix
 			value <- atomicUIO getMessage
 			case getBody "jabber:component:accept" value of
 				Just body -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
@@ -111,7 +116,7 @@ adhocBotAnswerListMulti componentJid sendMessage getMessage from field = do
 			values <- untilParse getMessage (sendMessage $ mkSMS componentJid from helperText) parser
 			let selectedOptions = fmap snd $ filter (\(x, _) -> x `elem` values) options
 			return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] $ flip fmap selectedOptions $ \option ->
-						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ optionValue option]
+						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ fieldValue option]
 				]
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 	where
@@ -130,7 +135,7 @@ adhocBotAnswerListSingle componentJid sendMessage getMessage from field = do
 			let maybeOption = fmap snd $ find (\(x, _) -> x == value) options
 			case maybeOption of
 				Just option -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
-						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ optionValue option]
+						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ fieldValue option]
 					]]
 				Nothing -> do
 					atomicUIO $ sendMessage $ mkSMS componentJid from $ s"Please pick one of the given options"
@@ -164,11 +169,18 @@ adhocBotAnswerForm componentJid sendMessage getMessage from form = do
 			(return [])
 	return $ Element (s"{jabber:x:data}x") [(s"type", [ContentText $ s"submit"])] $ NodeElement <$> mconcat fields
 
-optionText :: Element -> Text
-optionText element = fromMaybe (optionValue element) $ attributeText (s"label") element
+label :: Element -> Maybe Text
+label = attributeText (s"label")
 
-optionValue :: Element -> Text
-optionValue element = mconcat $ elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren element
+optionText :: Element -> Text
+optionText element = fromMaybe (fieldValue element) (label element)
+
+fieldValue :: Element -> Text
+fieldValue = mconcat . (elementText <=< isNamed(s"{jabber:x:data}value") <=< elementChildren)
+
+desc :: Element -> Maybe Text
+desc = mfilter (not . T.null) . Just . mconcat .
+	(elementText <=< isNamed(s"{jabber:x:data}desc") <=< elementChildren)
 
 sendHelp :: (UIO.Unexceptional m, TC.TCDB db) =>
 	   db
