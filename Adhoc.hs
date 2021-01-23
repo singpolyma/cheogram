@@ -170,8 +170,31 @@ optionText element = fromMaybe (optionValue element) $ attributeText (s"label") 
 optionValue :: Element -> Text
 optionValue element = mconcat $ elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren element
 
-adhocBotRunCommand :: (UIO.Unexceptional m) => JID -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> JID -> Text -> [Element] -> m ()
-adhocBotRunCommand componentJid routeFrom sendMessage sendIQ getMessage from body cmdEls = do
+sendHelp :: (UIO.Unexceptional m, TC.TCDB db) =>
+	   db
+	-> JID
+	-> (XMPP.Message -> STM ())
+	-> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ)))
+	-> JID
+	-> JID
+	-> m ()
+sendHelp db componentJid sendMessage sendIQ from routeFrom = do
+	maybeRoute <- fmap (join . hush) $ UIO.fromIO $ TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
+	case parseJID =<< fmap fromString maybeRoute of
+		Just route -> do
+			mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
+			let helpMessage = botHelp $ commandList componentJid Nothing componentJid from $
+				isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren =<< maybeToList (XMPP.iqPayload =<< mfilter ((== XMPP.IQResult) . XMPP.iqType) mreply)
+			case helpMessage of
+				Just msg -> atomicUIO $ sendMessage msg
+				Nothing -> log "INVALID HELP MESSAGE" mreply
+		Nothing ->
+			case botHelp $ commandList componentJid Nothing componentJid from [] of
+				Just msg -> atomicUIO $ sendMessage msg
+				Nothing -> log "INVALID HELP MESSAGE" ()
+
+adhocBotRunCommand :: (TC.TCDB db, UIO.Unexceptional m) => db -> JID -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> JID -> Text -> [Element] -> m ()
+adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body cmdEls = do
 	let (nodes, cmds) = unzip $ mapMaybe (\el -> (,) <$> attributeText (s"node") el <*> pure el) cmdEls
 	case snd <$> find (\(prefixes, _) -> Set.member body prefixes) (zip (uniquePrefix nodes) cmds) of
 		Just cmd -> do
@@ -181,7 +204,7 @@ adhocBotRunCommand componentJid routeFrom sendMessage sendIQ getMessage from bod
 				iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") cmd])] []
 			}
 			sendAndRespondTo cmdIQ
-		Nothing -> atomicUIO $ sendMessage $ mkSMS componentJid from (s"Instead of sending messages to " ++ formatJID componentJid ++ s" directly, you can SMS your contacts by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs.  Or, for support, come talk to us in xmpp:discuss@conference.soprani.ca?join")
+		Nothing -> sendHelp db componentJid sendMessage sendIQ from routeFrom
 	where
 	sendAndRespondTo cmdIQ = do
 		mcmdResult <- atomicUIO =<< UIO.lift (sendIQ cmdIQ)
@@ -212,32 +235,16 @@ adhocBotRunCommand componentJid routeFrom sendMessage sendIQ getMessage from bod
 
 adhocBotSession :: (UIO.Unexceptional m, TC.TCDB db) => db -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> XMPP.Message-> m ()
 adhocBotSession db componentJid sendMessage sendIQ getMessage message@(XMPP.Message { XMPP.messageFrom = Just from })
-	| Just body <- getBody "jabber:component:accept" message,
-	  body == s"help" = do
-		maybeRoute <- fmap (join . hush) $ UIO.fromIO $ TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-		case parseJID =<< fmap fromString maybeRoute of
-			Just route -> do
-				mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
-				let helpMessage = botHelp $ commandList componentJid Nothing componentJid from $
-					isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren =<< maybeToList (XMPP.iqPayload =<< mfilter ((== XMPP.IQResult) . XMPP.iqType) mreply)
-				case helpMessage of
-					Just msg -> atomicUIO $ sendMessage msg
-					Nothing -> log "INVALID HELP MESSAGE" mreply
-			Nothing ->
-				case botHelp $ commandList componentJid Nothing componentJid from [] of
-					Just msg -> atomicUIO $ sendMessage msg
-					Nothing -> log "INVALID HELP MESSAGE" ()
 	| Just body <- getBody "jabber:component:accept" message = do
 		maybeRoute <- fmap (join . hush) $ UIO.fromIO $ TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
 		case parseJID =<< fmap fromString maybeRoute of
 			Just route -> do
 				mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
 				case iqPayload =<< mfilter ((==IQResult) . iqType) mreply of
-					Just reply -> adhocBotRunCommand componentJid routeFrom sendMessage sendIQ getMessage from body (elementChildren reply)
-					Nothing -> adhocBotRunCommand componentJid routeFrom sendMessage sendIQ getMessage from body (elementChildren =<< maybeToList (iqPayload $ commandList componentJid Nothing componentJid from []))
-			Nothing -> adhocBotRunCommand componentJid routeFrom sendMessage sendIQ getMessage from body (elementChildren =<< maybeToList (iqPayload $ commandList componentJid Nothing componentJid from []))
-	| otherwise =
-		atomicUIO $ sendMessage $ mkSMS componentJid from (s"Instead of sending messages to " ++ formatJID componentJid ++ s" directly, you can SMS your contacts by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs.  Or, for support, come talk to us in xmpp:discuss@conference.soprani.ca?join")
+					Just reply -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body (elementChildren reply)
+					Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body (elementChildren =<< maybeToList (iqPayload $ commandList componentJid Nothing componentJid from []))
+			Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body (elementChildren =<< maybeToList (iqPayload $ commandList componentJid Nothing componentJid from []))
+	| otherwise = sendHelp db componentJid sendMessage sendIQ from routeFrom
 	where
 	Just routeFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/adhocbot"
 adhocBotSession _ _ _ _ _ m = log "BAD ADHOC BOT MESSAGE" m
