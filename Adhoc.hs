@@ -103,17 +103,17 @@ queryCommandList to from = do
 	return [mkStanzaRec $ (queryCommandList' to from) {iqID = uuid}]
 
 
-untilParse :: (UIO.Unexceptional m) => m Message -> STM () -> Atto.Parser b -> m b
+untilParse :: (UIO.Unexceptional m) => m Message -> m () -> Atto.Parser b -> m b
 untilParse getText onFail parser = do
 	text <- (fromMaybe mempty . getBody "jabber:component:accept") <$> getText
 	case Atto.parseOnly parser text of
 		Right v -> return v
 		Left _ -> do
-			atomicUIO onFail
+			onFail
 			untilParse getText onFail parser
 
-adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> m XMPP.Message -> JID -> Element -> m [Element]
-adhocBotAnswerTextSingle componentJid sendMessage getMessage from field = do
+adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
+adhocBotAnswerTextSingle sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
 			let lbl = fromMaybe (s"Enter text") $ label field
@@ -121,8 +121,7 @@ adhocBotAnswerTextSingle componentJid sendMessage getMessage from field = do
 				desc field
 			let valueSuffix = maybe mempty (\val -> s" [" ++ val ++ s"] ") $
 				mfilter (not . T.null) $ Just (fieldValue field)
-			atomicUIO $ sendMessage $ mkSMS componentJid from $
-				lbl ++ valueSuffix ++ s":" ++ descSuffix
+			sendText $ lbl ++ valueSuffix ++ s":" ++ descSuffix
 			value <- getMessage
 			case getBody "jabber:component:accept" value of
 				Just body -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
@@ -131,15 +130,15 @@ adhocBotAnswerTextSingle componentJid sendMessage getMessage from field = do
 				Nothing -> return []
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 
-adhocBotAnswerListMulti :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> m XMPP.Message -> JID -> Element -> m [Element]
-adhocBotAnswerListMulti componentJid sendMessage getMessage from field = do
+adhocBotAnswerListMulti :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
+adhocBotAnswerListMulti sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
 			let label = fromMaybe (s"Select") $ attributeText (s"label") field
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
 			let optionsText = fmap (\(n, v) -> tshow n <> s". " <> optionText v) options
-			atomicUIO $ sendMessage $ mkSMS componentJid from $ unlines $ [label <> s": (enter numbers with commas or spaces between them)"] <> optionsText
-			values <- untilParse getMessage (sendMessage $ mkSMS componentJid from helperText) parser
+			sendText $ unlines $ [label <> s": (enter numbers with commas or spaces between them)"] <> optionsText
+			values <- untilParse getMessage (sendText helperText) parser
 			let selectedOptions = fmap snd $ filter (\(x, _) -> x `elem` values) options
 			return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] $ flip fmap selectedOptions $ \option ->
 						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ fieldValue option]
@@ -149,47 +148,47 @@ adhocBotAnswerListMulti componentJid sendMessage getMessage from field = do
 	parser = Atto.skipMany Atto.space *> Atto.sepBy (Atto.decimal :: Atto.Parser Int) (Atto.skipMany $ Atto.choice [Atto.space, Atto.char ',']) <* Atto.skipMany Atto.space <* Atto.endOfInput
 	helperText = s"I didn't understand your answer. Please send the numbers you want, separated by commas or spaces like \"1, 3\" or \"1 3\". Blank (or just spaces) to pick nothing."
 
-adhocBotAnswerListSingle :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> m XMPP.Message -> JID -> Element -> m [Element]
-adhocBotAnswerListSingle componentJid sendMessage getMessage from field = do
+adhocBotAnswerListSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
+adhocBotAnswerListSingle sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
 			let label = fromMaybe (s"Select") $ attributeText (s"label") field
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
 			let optionsText = fmap (\(n, v) -> tshow n <> s". " <> optionText v) options
-			atomicUIO $ sendMessage $ mkSMS componentJid from $ unlines $ [label <> s": (enter one number)"] <> optionsText
-			value <- untilParse getMessage (sendMessage $ mkSMS componentJid from helperText) (Atto.skipMany Atto.space *> (Atto.decimal :: Atto.Parser Int) <* Atto.skipMany Atto.space)
+			sendText $ unlines $ [label <> s": (enter one number)"] <> optionsText
+			value <- untilParse getMessage (sendText helperText) (Atto.skipMany Atto.space *> (Atto.decimal :: Atto.Parser Int) <* Atto.skipMany Atto.space)
 			let maybeOption = fmap snd $ find (\(x, _) -> x == value) options
 			case maybeOption of
 				Just option -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
 						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ fieldValue option]
 					]]
 				Nothing -> do
-					atomicUIO $ sendMessage $ mkSMS componentJid from $ s"Please pick one of the given options"
-					adhocBotAnswerListSingle componentJid sendMessage getMessage from field
+					sendText $ s"Please pick one of the given options"
+					adhocBotAnswerListSingle sendText getMessage field
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 	where
 	helperText = s"I didn't understand your answer. Please just send the number of the one item you want to pick, like \"1\""
 
-adhocBotAnswerForm :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> m XMPP.Message -> JID -> Element -> m Element
-adhocBotAnswerForm componentJid sendMessage getMessage from form = do
+adhocBotAnswerForm :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m Element
+adhocBotAnswerForm sendText getMessage form = do
 	fields <- forM (elementChildren form) $ \field -> do
 		flip HT.select [
 			( elementName field == s"{jabber:x:data}instructions",
-				atomicUIO (sendMessage $ mkSMS componentJid from $ mconcat $ elementText field) >> return []),
+				sendText (mconcat $ elementText field) >> return []),
 			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field == Just (s"list-single"),
-				adhocBotAnswerListSingle componentJid sendMessage getMessage from field),
+				adhocBotAnswerListSingle sendText getMessage field),
 			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field == Just (s"list-multi"),
-				adhocBotAnswerListMulti componentJid sendMessage getMessage from field),
+				adhocBotAnswerListMulti sendText getMessage field),
 			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field `elem` [Just (s"text-single"), Nothing],
 				-- The default if a type isn't specified is text-single
-				adhocBotAnswerTextSingle componentJid sendMessage getMessage from field),
+				adhocBotAnswerTextSingle sendText getMessage field),
 			( elementName field == s"{jabber:x:data}field",
 				-- The spec says a field type we don't understand should be treated as text-single
 				log "ADHOC BOT UNKNOWN FIELD" field >>
-				adhocBotAnswerTextSingle componentJid sendMessage getMessage from field
+				adhocBotAnswerTextSingle sendText getMessage field
 			)]
 			-- There can be other things in here that aren't fields, and we want to ignore them completely
 			(return [])
@@ -266,7 +265,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 					let cancel = void . atomicUIO =<< UIO.lift (sendIQ cancelIQ)
 					let sendText = atomicUIO . sendMessage . threadedMessage . mkSMS componentJid from
 					let cancelText = sendText . ((cmd <> s" ") <>)
-					returnForm <- adhocBotAnswerForm componentJid (sendMessage . threadedMessage) (withCancel sessionLifespan cancelText cancel getMessage) from form
+					returnForm <- adhocBotAnswerForm sendText (withCancel sessionLifespan cancelText cancel getMessage) form
 					let actions = listToMaybe $ isNamed(s"{http://jabber.org/protocol/commands}actions") =<< elementChildren payload
 					-- The standard says if actions is present, with no "execute" attribute, that the default is "next"
 					-- But if there is no actions, the default is "execute"
