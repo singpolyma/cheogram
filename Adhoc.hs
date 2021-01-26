@@ -208,6 +208,9 @@ adhocBotAnswerForm sendText getMessage form = do
 			  attributeText (s"type") field == Just (s"jid-single"),
 				adhocBotAnswerJidSingle sendText getMessage field),
 			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field == Just (s"hidden"),
+				return [field]),
+			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field `elem` [Just (s"text-single"), Nothing],
 				-- The default if a type isn't specified is text-single
 				adhocBotAnswerTextSingle sendText getMessage field),
