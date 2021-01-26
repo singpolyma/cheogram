@@ -125,6 +125,25 @@ adhocBotAnswerFixed sendText _getMessage field = do
 	sendText $ unlines values
 	return []
 
+adhocBotAnswerBoolean :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
+adhocBotAnswerBoolean sendText getMessage field = do
+	case attributeText (s"var") field of
+		Just var -> do
+			sendText $ formatLabel (fmap formatBool . hush . Atto.parseOnly parser) field ++ s"\nYes or No?"
+			value <- untilParse getMessage (sendText helperText) $ hush . Atto.parseOnly parser
+			return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
+				NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ HT.if' value (s"true") (s"false")]
+				]]
+		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
+	where
+	helperText = s"I didn't understand your answer. Please send yes or no"
+	parser = Atto.skipMany Atto.space *> (
+		(True <$ Atto.choice (Atto.asciiCI <$> [s"true", s"t", s"1", s"yes", s"y", s"enable", s"enabled"])) <|>
+		(False <$ Atto.choice (Atto.asciiCI <$> [s"false", s"f", s"0", s"no", s"n", s"disable", s"disabled"]))
+		) <* Atto.skipMany Atto.space <* Atto.endOfInput
+	formatBool True = s"Yes"
+	formatBool False = s"No"
+
 adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerTextSingle sendText getMessage field = do
 	case attributeText (s"var") field of
@@ -219,6 +238,9 @@ adhocBotAnswerForm sendText getMessage form = do
 			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field == Just (s"fixed"),
 				adhocBotAnswerFixed sendText getMessage field),
+			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field == Just (s"boolean"),
+				adhocBotAnswerBoolean sendText getMessage field),
 			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field `elem` [Just (s"text-single"), Nothing],
 				-- The default if a type isn't specified is text-single
