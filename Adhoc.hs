@@ -119,6 +119,12 @@ formatLabel valueFormatter field = lbl ++ value ++ descSuffix
 	value = maybe mempty (\v -> s" [Current value " ++ v ++ s"]") $ valueFormatter <=< mfilter (not . T.null) $ Just $ fieldValue field
 	descSuffix = maybe mempty (\dsc -> s"\n(" ++ dsc ++ s")") $ desc field
 
+adhocBotAnswerFixed :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
+adhocBotAnswerFixed sendText _getMessage field = do
+	let values = fmap (mconcat . elementText) $ isNamed (s"{jabber:x:data}value") =<< elementChildren field
+	sendText $ unlines values
+	return []
+
 adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerTextSingle sendText getMessage field = do
 	case attributeText (s"var") field of
@@ -210,6 +216,9 @@ adhocBotAnswerForm sendText getMessage form = do
 			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field == Just (s"hidden"),
 				return [field]),
+			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field == Just (s"fixed"),
+				adhocBotAnswerFixed sendText getMessage field),
 			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field `elem` [Just (s"text-single"), Nothing],
 				-- The default if a type isn't specified is text-single
