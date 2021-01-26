@@ -112,16 +112,18 @@ untilParse getText onFail parser = do
 			onFail
 			untilParse getText onFail parser
 
+formatLabel :: (Text -> Maybe Text) -> Element -> Text
+formatLabel valueFormatter field = lbl ++ value ++ descSuffix
+	where
+	lbl = maybe mempty T.toTitle $ label field
+	value = maybe mempty (\v -> s" [Current value " ++ v ++ s"]") $ valueFormatter <=< mfilter (not . T.null) $ Just $ fieldValue field
+	descSuffix = maybe mempty (\dsc -> s"\n(" ++ dsc ++ s")") $ desc field
+
 adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerTextSingle sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
-			let lbl = fromMaybe (s"Enter text") $ label field
-			let descSuffix = maybe mempty (\dsc -> s"\n(" ++ dsc ++ s")") $
-				desc field
-			let valueSuffix = maybe mempty (\val -> s" [" ++ val ++ s"] ") $
-				mfilter (not . T.null) $ Just (fieldValue field)
-			sendText $ lbl ++ valueSuffix ++ s":" ++ descSuffix
+			sendText $ s"Enter " ++ formatLabel Just field
 			value <- getMessage
 			case getBody "jabber:component:accept" value of
 				Just body -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
@@ -130,14 +132,21 @@ adhocBotAnswerTextSingle sendText getMessage field = do
 				Nothing -> return []
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 
+listOptionText :: (Foldable t) => t Text -> Text -> (Int, Element) -> Text
+listOptionText currentValues currentValueText (n, v) = tshow n ++ s". " ++ optionText v ++ selectedText v
+	where
+	selectedText option
+		| fieldValue option `elem` currentValues = currentValueText
+		| otherwise = mempty
+
 adhocBotAnswerListMulti :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerListMulti sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
-			let label = fromMaybe (s"Select") $ attributeText (s"label") field
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
-			let optionsText = fmap (\(n, v) -> tshow n ++ s". " ++ optionText v) options
-			sendText $ unlines $ [label ++ s": (enter numbers with commas or spaces between them)"] ++ optionsText
+			let currentValues = elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren field
+			let optionsText = fmap (listOptionText currentValues (s" [Currently Selected]")) options
+			sendText $ unlines $ [formatLabel (const Nothing) field] ++ optionsText ++ [s"Which numbers?"]
 			values <- untilParse getMessage (sendText helperText) parser
 			let selectedOptions = fmap snd $ filter (\(x, _) -> x `elem` values) options
 			return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] $ flip fmap selectedOptions $ \option ->
@@ -145,18 +154,18 @@ adhocBotAnswerListMulti sendText getMessage field = do
 				]
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 	where
-	parser = Atto.skipMany Atto.space *> Atto.sepBy (Atto.decimal :: Atto.Parser Int) (Atto.skipMany $ Atto.choice [Atto.space, Atto.char ',']) <* Atto.skipMany Atto.space <* Atto.endOfInput
+	parser = Atto.skipMany Atto.space *> Atto.sepBy Atto.decimal (Atto.skipMany $ Atto.choice [Atto.space, Atto.char ',']) <* Atto.skipMany Atto.space <* Atto.endOfInput
 	helperText = s"I didn't understand your answer. Please send the numbers you want, separated by commas or spaces like \"1, 3\" or \"1 3\". Blank (or just spaces) to pick nothing."
 
 adhocBotAnswerListSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerListSingle sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
-			let label = fromMaybe (s"Select") $ attributeText (s"label") field
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
-			let optionsText = fmap (\(n, v) -> tshow n ++ s". " ++ optionText v) options
-			sendText $ unlines $ [label ++ s": (enter one number)"] ++ optionsText
-			value <- untilParse getMessage (sendText helperText) (Atto.skipMany Atto.space *> (Atto.decimal :: Atto.Parser Int) <* Atto.skipMany Atto.space)
+			let currentValue = listToMaybe $ elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren field
+			let optionsText = fmap (listOptionText currentValue (s" [Current Value]")) options
+			sendText $ unlines $ [formatLabel (const Nothing) field] ++ optionsText ++ [s"Which number?"]
+			value <- untilParse getMessage (sendText helperText) (Atto.skipMany Atto.space *> Atto.decimal <* Atto.skipMany Atto.space)
 			let maybeOption = fmap snd $ find (\(x, _) -> x == value) options
 			case maybeOption of
 				Just option -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
