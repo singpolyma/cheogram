@@ -2,6 +2,7 @@ module Adhoc(adhocBotSession, commandList, queryCommandList) where
 
 import Prelude ()
 import BasicPrelude hiding (log)
+import Control.Concurrent (myThreadId, killThread)
 import Control.Concurrent.STM
 import Control.Error (hush)
 import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Content(ContentText), isNamed, elementText, elementChildren, attributeText)
@@ -9,19 +10,25 @@ import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Conte
 import Network.Protocol.XMPP (JID(..), parseJID, formatJID, IQ(..), IQType(..), emptyIQ, Message(..))
 import qualified Network.Protocol.XMPP as XMPP
 
+import qualified Control.Concurrent.STM.Delay as Delay
 import qualified Data.Attoparsec.Text as Atto
+import qualified Data.Bool.HT as HT
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.UUID as UUID ( toString )
 import qualified Data.UUID.V1 as UUID ( nextUUID )
 import qualified Database.TokyoCabinet as TC
 import qualified UnexceptionalIO as UIO
-import qualified Data.Bool.HT as HT
 
 import StanzaRec
 import UniquePrefix
 import Util
 import qualified ConfigureDirectMessageRoute
+
+sessionLifespan :: Int
+sessionLifespan = 60 * 60 * seconds
+	where
+	seconds = 1000000
 
 botHelp :: IQ -> Maybe Message
 botHelp (IQ { iqTo = Just to, iqFrom = Just from, iqPayload = Just payload }) =
@@ -61,6 +68,25 @@ commandList componentJid qid from to extras =
 			}
 		) extras
 
+withCancel :: (UIO.Unexceptional m) => Int -> (Text -> m ()) -> m () -> STM XMPP.Message -> m XMPP.Message
+withCancel sessionLength sendText cancelSession getMessage = do
+	delay <- fromIO_ $ Delay.newDelay sessionLength
+	maybeMsg <- atomicUIO $
+		(Delay.waitDelay delay *> pure Nothing)
+		<|>
+		Just <$> getMessage
+	case maybeMsg of
+		Just msg
+			| getBody (s"jabber:component:accept") msg == Just (s"cancel") -> cancel $ s"cancelled"
+		Just msg -> return msg
+		Nothing -> cancel $ s"expired"
+	where
+	cancel t = do
+		sendText t
+		cancelSession
+		fromIO_ $ myThreadId >>= killThread
+		return $ error "Unreachable"
+
 queryCommandList' :: JID -> JID -> IQ
 queryCommandList' to from =
 	(emptyIQ IQGet) {
@@ -77,16 +103,16 @@ queryCommandList to from = do
 	return [mkStanzaRec $ (queryCommandList' to from) {iqID = uuid}]
 
 
-untilParse :: (UIO.Unexceptional m) => STM Message -> STM () -> Atto.Parser b -> m b
+untilParse :: (UIO.Unexceptional m) => m Message -> STM () -> Atto.Parser b -> m b
 untilParse getText onFail parser = do
-	text <- atomicUIO $ (fromMaybe mempty . getBody "jabber:component:accept") <$> getText
+	text <- (fromMaybe mempty . getBody "jabber:component:accept") <$> getText
 	case Atto.parseOnly parser text of
 		Right v -> return v
 		Left _ -> do
 			atomicUIO onFail
 			untilParse getText onFail parser
 
-adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> STM XMPP.Message -> JID -> Element -> m [Element]
+adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> m XMPP.Message -> JID -> Element -> m [Element]
 adhocBotAnswerTextSingle componentJid sendMessage getMessage from field = do
 	case attributeText (s"var") field of
 		Just var -> do
@@ -97,7 +123,7 @@ adhocBotAnswerTextSingle componentJid sendMessage getMessage from field = do
 				mfilter (not . T.null) $ Just (fieldValue field)
 			atomicUIO $ sendMessage $ mkSMS componentJid from $
 				lbl ++ valueSuffix ++ s":" ++ descSuffix
-			value <- atomicUIO getMessage
+			value <- getMessage
 			case getBody "jabber:component:accept" value of
 				Just body -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
 						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText body]
@@ -105,7 +131,7 @@ adhocBotAnswerTextSingle componentJid sendMessage getMessage from field = do
 				Nothing -> return []
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 
-adhocBotAnswerListMulti :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> STM XMPP.Message -> JID -> Element -> m [Element]
+adhocBotAnswerListMulti :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> m XMPP.Message -> JID -> Element -> m [Element]
 adhocBotAnswerListMulti componentJid sendMessage getMessage from field = do
 	case attributeText (s"var") field of
 		Just var -> do
@@ -123,7 +149,7 @@ adhocBotAnswerListMulti componentJid sendMessage getMessage from field = do
 	parser = Atto.skipMany Atto.space *> Atto.sepBy (Atto.decimal :: Atto.Parser Int) (Atto.skipMany $ Atto.choice [Atto.space, Atto.char ',']) <* Atto.skipMany Atto.space <* Atto.endOfInput
 	helperText = s"I didn't understand your answer. Please send the numbers you want, separated by commas or spaces like \"1, 3\" or \"1 3\". Blank (or just spaces) to pick nothing."
 
-adhocBotAnswerListSingle :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> STM XMPP.Message -> JID -> Element -> m [Element]
+adhocBotAnswerListSingle :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> m XMPP.Message -> JID -> Element -> m [Element]
 adhocBotAnswerListSingle componentJid sendMessage getMessage from field = do
 	case attributeText (s"var") field of
 		Just var -> do
@@ -144,7 +170,7 @@ adhocBotAnswerListSingle componentJid sendMessage getMessage from field = do
 	where
 	helperText = s"I didn't understand your answer. Please just send the number of the one item you want to pick, like \"1\""
 
-adhocBotAnswerForm :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> STM XMPP.Message -> JID -> Element -> m Element
+adhocBotAnswerForm :: (UIO.Unexceptional m) => JID -> (XMPP.Message -> STM ()) -> m XMPP.Message -> JID -> Element -> m Element
 adhocBotAnswerForm componentJid sendMessage getMessage from form = do
 	fields <- forM (elementChildren form) $ \field -> do
 		flip HT.select [
@@ -229,9 +255,18 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 				| IQResult == iqType resultIQ,
 				  Just payload <- iqPayload resultIQ,
 				  Just sessionid <- attributeText (s"sessionid") payload,
+				  Just cmd <- attributeText (s"node") payload,
 				  [form] <- isNamed (s"{jabber:x:data}x") =<< elementChildren payload -> do
 					let threadedMessage msg = msg { messagePayloads = (Element (s"thread") [] [NodeContent $ ContentText sessionid]) : messagePayloads msg }
-					returnForm <- adhocBotAnswerForm componentJid (sendMessage . threadedMessage) getMessage from form
+					let cancelIQ = (emptyIQ IQSet) {
+						iqFrom = Just routeFrom,
+						iqTo = iqFrom resultIQ,
+						iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText cmd]), (s"sessionid", [ContentText sessionid]), (s"action", [ContentText $ s"cancel"])] []
+					}
+					let cancel = void . atomicUIO =<< UIO.lift (sendIQ cancelIQ)
+					let sendText = atomicUIO . sendMessage . threadedMessage . mkSMS componentJid from
+					let cancelText = sendText . ((cmd <> s" ") <>)
+					returnForm <- adhocBotAnswerForm componentJid (sendMessage . threadedMessage) (withCancel sessionLifespan cancelText cancel getMessage) from form
 					let actions = listToMaybe $ isNamed(s"{http://jabber.org/protocol/commands}actions") =<< elementChildren payload
 					-- The standard says if actions is present, with no "execute" attribute, that the default is "next"
 					-- But if there is no actions, the default is "execute"
