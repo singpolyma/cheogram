@@ -136,8 +136,8 @@ adhocBotAnswerListMulti sendText getMessage field = do
 		Just var -> do
 			let label = fromMaybe (s"Select") $ attributeText (s"label") field
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
-			let optionsText = fmap (\(n, v) -> tshow n <> s". " <> optionText v) options
-			sendText $ unlines $ [label <> s": (enter numbers with commas or spaces between them)"] <> optionsText
+			let optionsText = fmap (\(n, v) -> tshow n ++ s". " ++ optionText v) options
+			sendText $ unlines $ [label ++ s": (enter numbers with commas or spaces between them)"] ++ optionsText
 			values <- untilParse getMessage (sendText helperText) parser
 			let selectedOptions = fmap snd $ filter (\(x, _) -> x `elem` values) options
 			return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] $ flip fmap selectedOptions $ \option ->
@@ -154,8 +154,8 @@ adhocBotAnswerListSingle sendText getMessage field = do
 		Just var -> do
 			let label = fromMaybe (s"Select") $ attributeText (s"label") field
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
-			let optionsText = fmap (\(n, v) -> tshow n <> s". " <> optionText v) options
-			sendText $ unlines $ [label <> s": (enter one number)"] <> optionsText
+			let optionsText = fmap (\(n, v) -> tshow n ++ s". " ++ optionText v) options
+			sendText $ unlines $ [label ++ s": (enter one number)"] ++ optionsText
 			value <- untilParse getMessage (sendText helperText) (Atto.skipMany Atto.space *> (Atto.decimal :: Atto.Parser Int) <* Atto.skipMany Atto.space)
 			let maybeOption = fmap snd $ find (\(x, _) -> x == value) options
 			case maybeOption of
@@ -264,7 +264,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 					}
 					let cancel = void . atomicUIO =<< UIO.lift (sendIQ cancelIQ)
 					let sendText = atomicUIO . sendMessage . threadedMessage . mkSMS componentJid from
-					let cancelText = sendText . ((cmd <> s" ") <>)
+					let cancelText = sendText . ((cmd ++ s" ") ++)
 					returnForm <- adhocBotAnswerForm sendText (withCancel sessionLifespan cancelText cancel getMessage) form
 					let actions = listToMaybe $ isNamed(s"{http://jabber.org/protocol/commands}actions") =<< elementChildren payload
 					-- The standard says if actions is present, with no "execute" attribute, that the default is "next"
