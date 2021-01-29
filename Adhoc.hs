@@ -300,10 +300,10 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 				iqTo = parseJID =<< attributeText (s"jid") cmd,
 				iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") cmd])] []
 			}
-			sendAndRespondTo cmdIQ
+			sendAndRespondTo (Just $ s"You can return to main menu by saying 'cancel' at any time.") cmdIQ
 		Nothing -> sendHelp db componentJid sendMessage sendIQ from routeFrom
 	where
-	sendAndRespondTo cmdIQ = do
+	sendAndRespondTo intro cmdIQ = do
 		mcmdResult <- atomicUIO =<< UIO.lift (sendIQ cmdIQ)
 		case mcmdResult of
 			Just resultIQ
@@ -325,6 +325,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 					let cancel = void . atomicUIO =<< UIO.lift (sendIQ cancelIQ)
 					let sendText = atomicUIO . sendMessage . threadedMessage . mkSMS componentJid from
 					let cancelText = sendText . ((cmd ++ s" ") ++)
+					forM_ intro sendText
 					returnForm <- adhocBotAnswerForm sendText (withCancel sessionLifespan cancelText cancel getMessage) form
 					let actions = listToMaybe $ isNamed(s"{http://jabber.org/protocol/commands}actions") =<< elementChildren payload
 					-- The standard says if actions is present, with no "execute" attribute, that the default is "next"
@@ -335,7 +336,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 						iqTo = iqFrom resultIQ,
 						iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") payload]), (s"sessionid", [ContentText sessionid]), (s"action", [ContentText defaultAction])] [NodeElement returnForm]
 					}
-					sendAndRespondTo cmdIQ'
+					sendAndRespondTo Nothing cmdIQ'
 				| otherwise -> atomicUIO $ sendMessage $ mkSMS componentJid from (s"Command error")
 			Nothing -> atomicUIO $ sendMessage $ mkSMS componentJid from (s"Command timed out")
 
