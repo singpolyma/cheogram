@@ -103,25 +103,52 @@ queryCommandList to from = do
 	return [mkStanzaRec $ (queryCommandList' to from) {iqID = uuid}]
 
 
-untilParse :: (UIO.Unexceptional m) => m Message -> m () -> Atto.Parser b -> m b
+untilParse :: (UIO.Unexceptional m) => m Message -> m () -> (Text -> Maybe b) -> m b
 untilParse getText onFail parser = do
 	text <- (fromMaybe mempty . getBody "jabber:component:accept") <$> getText
-	case Atto.parseOnly parser text of
-		Right v -> return v
-		Left _ -> do
-			onFail
-			untilParse getText onFail parser
+	maybe parseFail return $ parser text
+	where
+	parseFail = do
+		onFail
+		untilParse getText onFail parser
+
+formatLabel :: (Text -> Maybe Text) -> Element -> Text
+formatLabel valueFormatter field = lbl ++ value ++ descSuffix
+	where
+	lbl = maybe mempty T.toTitle $ label field
+	value = maybe mempty (\v -> s" [Current value " ++ v ++ s"]") $ valueFormatter <=< mfilter (not . T.null) $ Just $ fieldValue field
+	descSuffix = maybe mempty (\dsc -> s"\n(" ++ dsc ++ s")") $ desc field
+
+adhocBotAnswerFixed :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
+adhocBotAnswerFixed sendText _getMessage field = do
+	let values = fmap (mconcat . elementText) $ isNamed (s"{jabber:x:data}value") =<< elementChildren field
+	sendText $ unlines values
+	return []
+
+adhocBotAnswerBoolean :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
+adhocBotAnswerBoolean sendText getMessage field = do
+	case attributeText (s"var") field of
+		Just var -> do
+			sendText $ formatLabel (fmap formatBool . hush . Atto.parseOnly parser) field ++ s"\nYes or No?"
+			value <- untilParse getMessage (sendText helperText) $ hush . Atto.parseOnly parser
+			return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
+				NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ HT.if' value (s"true") (s"false")]
+				]]
+		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
+	where
+	helperText = s"I didn't understand your answer. Please send yes or no"
+	parser = Atto.skipMany Atto.space *> (
+		(True <$ Atto.choice (Atto.asciiCI <$> [s"true", s"t", s"1", s"yes", s"y", s"enable", s"enabled"])) <|>
+		(False <$ Atto.choice (Atto.asciiCI <$> [s"false", s"f", s"0", s"no", s"n", s"disable", s"disabled"]))
+		) <* Atto.skipMany Atto.space <* Atto.endOfInput
+	formatBool True = s"Yes"
+	formatBool False = s"No"
 
 adhocBotAnswerTextSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerTextSingle sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
-			let lbl = fromMaybe (s"Enter text") $ label field
-			let descSuffix = maybe mempty (\dsc -> s"\n(" ++ dsc ++ s")") $
-				desc field
-			let valueSuffix = maybe mempty (\val -> s" [" ++ val ++ s"] ") $
-				mfilter (not . T.null) $ Just (fieldValue field)
-			sendText $ lbl ++ valueSuffix ++ s":" ++ descSuffix
+			sendText $ s"Enter " ++ formatLabel Just field
 			value <- getMessage
 			case getBody "jabber:component:accept" value of
 				Just body -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
@@ -130,33 +157,53 @@ adhocBotAnswerTextSingle sendText getMessage field = do
 				Nothing -> return []
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 
+listOptionText :: (Foldable t) => t Text -> Text -> (Int, Element) -> Text
+listOptionText currentValues currentValueText (n, v) = tshow n ++ s". " ++ optionText v ++ selectedText v
+	where
+	selectedText option
+		| fieldValue option `elem` currentValues = currentValueText
+		| otherwise = mempty
+
+adhocBotAnswerJidSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
+adhocBotAnswerJidSingle sendText getMessage field = do
+	case attributeText (s"var") field of
+		Just var -> do
+			sendText $ s"Enter " ++ formatLabel Just field
+			value <- untilParse getMessage (sendText helperText) XMPP.parseJID
+			return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
+				NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ formatJID value]
+				]]
+		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
+	where
+	helperText = s"I didn't understand your answer. Please send only a valid JID like person@example.com or perhaps just example.com"
+
 adhocBotAnswerListMulti :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerListMulti sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
-			let label = fromMaybe (s"Select") $ attributeText (s"label") field
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
-			let optionsText = fmap (\(n, v) -> tshow n <> s". " <> optionText v) options
-			sendText $ unlines $ [label <> s": (enter numbers with commas or spaces between them)"] <> optionsText
-			values <- untilParse getMessage (sendText helperText) parser
+			let currentValues = elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren field
+			let optionsText = fmap (listOptionText currentValues (s" [Currently Selected]")) options
+			sendText $ unlines $ [formatLabel (const Nothing) field] ++ optionsText ++ [s"Which numbers?"]
+			values <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly parser)
 			let selectedOptions = fmap snd $ filter (\(x, _) -> x `elem` values) options
 			return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] $ flip fmap selectedOptions $ \option ->
 						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ fieldValue option]
 				]
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 	where
-	parser = Atto.skipMany Atto.space *> Atto.sepBy (Atto.decimal :: Atto.Parser Int) (Atto.skipMany $ Atto.choice [Atto.space, Atto.char ',']) <* Atto.skipMany Atto.space <* Atto.endOfInput
+	parser = Atto.skipMany Atto.space *> Atto.sepBy Atto.decimal (Atto.skipMany $ Atto.choice [Atto.space, Atto.char ',']) <* Atto.skipMany Atto.space <* Atto.endOfInput
 	helperText = s"I didn't understand your answer. Please send the numbers you want, separated by commas or spaces like \"1, 3\" or \"1 3\". Blank (or just spaces) to pick nothing."
 
 adhocBotAnswerListSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerListSingle sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
-			let label = fromMaybe (s"Select") $ attributeText (s"label") field
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
-			let optionsText = fmap (\(n, v) -> tshow n <> s". " <> optionText v) options
-			sendText $ unlines $ [label <> s": (enter one number)"] <> optionsText
-			value <- untilParse getMessage (sendText helperText) (Atto.skipMany Atto.space *> (Atto.decimal :: Atto.Parser Int) <* Atto.skipMany Atto.space)
+			let currentValue = listToMaybe $ elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren field
+			let optionsText = fmap (listOptionText currentValue (s" [Current Value]")) options
+			sendText $ unlines $ [formatLabel (const Nothing) field] ++ optionsText ++ [s"Which number?"]
+			value <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly parser)
 			let maybeOption = fmap snd $ find (\(x, _) -> x == value) options
 			case maybeOption of
 				Just option -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
@@ -168,6 +215,7 @@ adhocBotAnswerListSingle sendText getMessage field = do
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 	where
 	helperText = s"I didn't understand your answer. Please just send the number of the one item you want to pick, like \"1\""
+	parser = Atto.skipMany Atto.space *> Atto.decimal <* Atto.skipMany Atto.space
 
 adhocBotAnswerForm :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m Element
 adhocBotAnswerForm sendText getMessage form = do
@@ -181,6 +229,18 @@ adhocBotAnswerForm sendText getMessage form = do
 			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field == Just (s"list-multi"),
 				adhocBotAnswerListMulti sendText getMessage field),
+			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field == Just (s"jid-single"),
+				adhocBotAnswerJidSingle sendText getMessage field),
+			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field == Just (s"hidden"),
+				return [field]),
+			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field == Just (s"fixed"),
+				adhocBotAnswerFixed sendText getMessage field),
+			( elementName field == s"{jabber:x:data}field" &&
+			  attributeText (s"type") field == Just (s"boolean"),
+				adhocBotAnswerBoolean sendText getMessage field),
 			( elementName field == s"{jabber:x:data}field" &&
 			  attributeText (s"type") field `elem` [Just (s"text-single"), Nothing],
 				-- The default if a type isn't specified is text-single
@@ -264,7 +324,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 					}
 					let cancel = void . atomicUIO =<< UIO.lift (sendIQ cancelIQ)
 					let sendText = atomicUIO . sendMessage . threadedMessage . mkSMS componentJid from
-					let cancelText = sendText . ((cmd <> s" ") <>)
+					let cancelText = sendText . ((cmd ++ s" ") ++)
 					returnForm <- adhocBotAnswerForm sendText (withCancel sessionLifespan cancelText cancel getMessage) form
 					let actions = listToMaybe $ isNamed(s"{http://jabber.org/protocol/commands}actions") =<< elementChildren payload
 					-- The standard says if actions is present, with no "execute" attribute, that the default is "next"
