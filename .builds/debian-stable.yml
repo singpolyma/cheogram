@@ -17,7 +17,7 @@ packages:
 environment:
   LANG: C.UTF-8
 artifacts:
-- cheogram/dist/build/cheogram
+- cheogram/dist/build/cheogram/cheogram
 tasks:
 - cabal_update: |
     cabal update
