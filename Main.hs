@@ -1028,12 +1028,12 @@ participantJid payloads =
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
-component db redis statsd backendHost did adhocBotIQReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
+component db redis pushStatsd backendHost did adhocBotIQReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
 	sendThread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 
 		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaTo stanza)
-		liftIO $ StatsD.push statsd [StatsD.stat ["stanzas", "out" ++ tags] 1 "c" Nothing]
+		pushStatsd [StatsD.stat ["stanzas", "out" ++ tags] 1 "c" Nothing]
 
 		case (stanzaFrom stanza, stanzaTo stanza) of
 			(Just from, Just to)
@@ -1054,7 +1054,7 @@ component db redis statsd backendHost did adhocBotIQReceiver adhocBotMessage toR
 	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread sendThread >> killThread recvThread)) $ forever $ do
 		stanza <- atomicUIO $ readTChan toStanzaProcessor
 		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaFrom (receivedStanza stanza))
-		liftIO $ StatsD.push statsd [StatsD.stat ["stanzas", "in" ++ tags] 1 "c" Nothing]
+		pushStatsd [StatsD.stat ["stanzas", "in" ++ tags] 1 "c" Nothing]
 		liftIO $ forkIO $ case stanza of
 			(ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
 				| Just returnFrom <- parseJID (bareTxt to ++ s"/capsQuery") ->
@@ -1964,5 +1964,5 @@ main = do
 
 				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
 					runComponent (Server componentJid host (PortNumber port)) secret
-						(component db redis statsd backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+						(component db redis (void . UIO.fromIO . StatsD.push statsd) backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
