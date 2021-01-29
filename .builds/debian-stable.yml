@@ -1,6 +1,7 @@
 image: debian/stable
 sources:
 - https://git.sr.ht/~singpolyma/cheogram
+- https://git.sr.ht/~singpolyma/jingle-xmpp
 packages:
 - ghc
 - cabal-install
@@ -8,8 +9,10 @@ packages:
 - pkg-config
 - libgnutls28-dev
 - libgsasl7-dev
+- libpcre3-dev
 - libtokyocabinet-dev
 - libxml2-dev
+- zlib1g-dev
 - hlint
 environment:
   LANG: C.UTF-8
@@ -19,6 +22,10 @@ tasks:
 - cabal_update: |
     cabal update
 - dependencies: |
+    cabal install random-1.1
+    cd jingle-xmpp
+    cabal install
+    cd ..
     cd cheogram
     cabal install --enable-tests --only-dependencies
 - test: |
