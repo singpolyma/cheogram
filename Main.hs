@@ -1891,31 +1891,45 @@ main = do
 			void $ forkIO $ forever $ atomically (writeTChan toRejoinManager CheckPings) >> threadDelay 120000000
 			void $ forkIO $ rejoinManager db (atomically . writeTChan sendToComponent) (textToString $ formatJID componentJid) toRoomPresences toRejoinManager
 
+			-- When we're talking to the adhoc bot we'll get a command from stuff\40example.com@cheogram.com
+			-- When they're talking to us directly, we'll get the command from stuff@example.com
+			-- In either case, we want to use the same key and understand it as coming from the same user
+			let maybeUnescape userJid
+				| jidDomain userJid == jidDomain componentJid,
+				  Just node <- jidNode userJid =
+					let resource = maybe mempty strResource $ jidResource userJid
+					in
+					-- If we can't parse the thing we unescaped, just return the original
+					fromMaybe userJid $ parseJID (unescapeJid (strNode node) ++ if T.null resource then mempty else s"/" ++ resource)
+				| otherwise = userJid
+
 			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main
 				(\userJid ->
-					(parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
+					let userJid' = maybeUnescape userJid in
+					(parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0direct-message-route"))
 				)
 				(\userJid mgatewayJid -> do
+					let userJid' = maybeUnescape userJid
 					case mgatewayJid of
 						Just gatewayJid -> do
-							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
+							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0direct-message-route"))
 							forM_ maybeExistingRoute $ \existingRoute ->
 								when (existingRoute /= gatewayJid)
-									(atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid existingRoute)
+									(atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid' existingRoute)
 
-							True <- TC.runTCM $ TC.put db (T.unpack (bareTxt userJid) ++ "\0direct-message-route") (T.unpack $ formatJID gatewayJid)
+							True <- TC.runTCM $ TC.put db (T.unpack (bareTxt userJid') ++ "\0direct-message-route") (T.unpack $ formatJID gatewayJid)
 
-							forM_ (parseJID $ escapeJid (bareTxt userJid) ++ s"@" ++ formatJID componentJid) $ \from ->
+							forM_ (parseJID $ escapeJid (bareTxt userJid') ++ s"@" ++ formatJID componentJid) $ \from ->
 								forM_ (parseJID $ did ++ s"@" ++ formatJID gatewayJid) $ \to ->
 									atomically $ writeTChan sendToComponent $ mkStanzaRec $
-										mkSMS from to (s"/addjid " ++ bareTxt userJid)
+										mkSMS from to (s"/addjid " ++ bareTxt userJid')
 
 							return ()
 						Nothing -> do
-							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0direct-message-route"))
-							TC.runTCM $ TC.out db (T.unpack (bareTxt userJid) ++ "\0direct-message-route")
+							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0direct-message-route"))
+							TC.runTCM $ TC.out db (T.unpack (bareTxt userJid') ++ "\0direct-message-route")
 							forM_ maybeExistingRoute $ \existingRoute ->
-								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid existingRoute
+								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid' existingRoute
 				)
 
 			jingleHandler <- UIO.runEitherIO $ Jingle.setupJingleHandlers jingleStore s5bListenOn (fromString s5bhost, s5bport)
