@@ -1121,6 +1121,10 @@ component db redis pushStatsd backendHost did adhocBotIQReceiver adhocBotMessage
 							  fmap strNode (jidNode from) /= Just did ->
 								mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
 						_ -> log "backend no match" stanza
+				| (strResource <$> jidResource to) == Just (s"adhocbot") ->
+					-- If this message is to the adhoc bot, stop processing it
+					-- We're already handling it in the other thread
+					return ()
 			(Just from, Just to, Nothing, Just localpart, ReceivedMessage m)
 				| Just txt <- getBody "jabber:component:accept" m,
 				  (T.length txt == 144 || T.length txt == 145) && (s"CHEOGRAM") `T.isPrefixOf` txt -> liftIO $ do -- the length of our token messages

@@ -348,10 +348,11 @@ adhocBotSession db componentJid sendMessage sendIQ getMessage message@(XMPP.Mess
 			Just route -> do
 				mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
 				case iqPayload =<< mfilter ((==IQResult) . iqType) mreply of
-					Just reply -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body (elementChildren reply)
-					Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body (elementChildren =<< maybeToList (iqPayload $ commandList componentJid Nothing componentJid from []))
-			Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body (elementChildren =<< maybeToList (iqPayload $ commandList componentJid Nothing componentJid from []))
+					Just reply -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body $ elementChildren reply ++ internalCommands
+					Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body internalCommands
+			Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body internalCommands
 	| otherwise = sendHelp db componentJid sendMessage sendIQ from routeFrom
 	where
+	internalCommands = elementChildren =<< maybeToList (iqPayload $ commandList componentJid Nothing componentJid from [])
 	Just routeFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/adhocbot"
 adhocBotSession _ _ _ _ _ m = log "BAD ADHOC BOT MESSAGE" m
