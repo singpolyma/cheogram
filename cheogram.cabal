@@ -61,7 +61,9 @@ executable cheogram
                 unexceptionalio,
                 unexceptionalio-trans,
                 utility-ht,
-                xml-types
+                xml-types,
+                -- temporary fix for https://github.com/Gabriel439/Haskell-MMorph-Library/issues/54
+                mmorph < 1.1.4
 
 source-repository head
         type:     git
