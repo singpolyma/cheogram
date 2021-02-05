@@ -24,6 +24,7 @@ import qualified Network.StatsD as StatsD
 
 import "monads-tf" Control.Monad.Error (catchError) -- ick
 import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Name(Name), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, attributeContent, hasAttribute, nameNamespace)
+import UnexceptionalIO (Unexceptional)
 import qualified UnexceptionalIO as UIO
 import qualified Dhall
 import qualified Dhall.Core as Dhall hiding (Decoder)
@@ -629,11 +630,12 @@ handleRegister _ _ iq _ = do
 	log "HANDLEREGISTER UNKNOWN" iq
 	return []
 
-componentStanza db _ _ adhocBotMessage _ _ _ _ componentJid (ReceivedMessage (m@Message { messageTo = Just (JID { jidNode = Nothing }), messageFrom = Just from}))
-	| Just reply <- groupTextPorcelein (formatJID componentJid) m =
+componentStanza db _ _ (adhocBotMessage, cacheOOB) _ _ _ _ componentJid (ReceivedMessage (m@Message { messageTo = Just (JID { jidNode = Nothing }), messageFrom = Just from}))
+	| Just reply <- groupTextPorcelein (formatJID componentJid) m = do
 		-- TODO: only when from direct message route
 		-- TODO: only if target does not understand stanza addressing
-		return [mkStanzaRec reply]
+		reply' <- cacheOOB reply
+		return [mkStanzaRec reply']
 	| Just body <- getBody "jabber:component:accept" m = do
 		atomicUIO $ adhocBotMessage m
 		return []
@@ -1023,6 +1025,30 @@ participantJid payloads =
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
+cacheOneOOB :: (Unexceptional m) => XML.Element -> m ((Text, Text), XML.Element)
+cacheOneOOB oob
+	| [url] <- (mconcat . XML.elementText) <$> urls =
+		return ((url, url), oob)
+	| otherwise = do
+		log "cacheOneOOB MALFORMED" oob
+		return ((mempty, mempty), oob)
+	where
+	urlName = s"{jabber:x:oob}url"
+	(urls, rest) = partition (\el -> XML.elementName el == urlName) (elementChildren oob)
+
+cacheOOB :: (Unexceptional m) => XMPP.Message -> m XMPP.Message
+cacheOOB m@(XMPP.Message { XMPP.messagePayloads = payloads }) = do
+	(replacements, oobs') <- unzip <$> mapM cacheOneOOB oobs
+	let body' =
+		(mkElement bodyName .: foldl (\body (a, b) -> T.replace a b body)) <$>
+		(map (mconcat . XML.elementText) body) <*> pure replacements
+	return $ m { XMPP.messagePayloads = noOobsNoBody ++ oobs' ++ body' }
+	where
+	oobName = s"{jabber:x:oob}x"
+	bodyName = s"{jabber:component:accept}body"
+	(body, noOobsNoBody) = partition (\el -> XML.elementName el == bodyName) noOobs
+	(oobs, noOobs) = partition (\el -> XML.elementName el == oobName) payloads
+
 component db redis pushStatsd backendHost did adhocBotIQReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
 	sendThread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
@@ -1170,7 +1196,7 @@ component db redis pushStatsd backendHost did adhocBotIQReceiver adhocBotMessage
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
 					case (fmap fromString maybeRoute, parseJID (unescapeJid localpart ++ toResourceSuffix), mapToComponent from) of
 						(Just route, Just routeTo, Just componentFrom) | route == strDomain (jidDomain from) -> do
-								sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFrom routeTo stanza
+							(sendToComponent . receivedStanza) =<< mapReceivedMessageM cacheOOB (receivedStanzaFromTo componentFrom routeTo stanza)
 						_ | Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to -> do
 							sendToComponent $ stanzaError stanza $
 								Element (fromString "{jabber:component:accept}error")
@@ -1197,7 +1223,7 @@ component db redis pushStatsd backendHost did adhocBotIQReceiver adhocBotMessage
 				  (nameNamespace $ elementName p) `elem` [Just (s"urn:xmpp:jingle:1"), Just (s"http://jabber.org/protocol/ibb")] -> do
 					jingleHandler iq
 				| otherwise -> liftIO $
-					mapM_ sendToComponent =<< componentStanza db backendTo registrationJids adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid stanza
+					mapM_ sendToComponent =<< componentStanza db backendTo registrationJids (adhocBotMessage, cacheOOB jingleStore jingleStoreURL) toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid stanza
 	where
 	mapToComponent = mapToBackend (formatJID componentJid)
 	sendToComponent = atomically . writeTChan toComponent
