@@ -23,7 +23,7 @@ executable cheogram
         main-is: Main.hs
         other-modules: ConfigureDirectMessageRoute, Util, RedisURL, IQManager, UniquePrefix, StanzaRec, Adhoc
         default-language: Haskell2010
-        ghc-options:      -Wno-tabs -Wno-orphans
+        ghc-options:      -Wall -Wno-tabs -Wno-orphans -Wno-name-shadowing -O2 -threaded
 
         build-depends:
                 base == 4.*,
@@ -41,7 +41,9 @@ executable cheogram
                 HostAndPort,
                 HTTP,
                 http-types,
+                http-streams,
                 hstatsd,
+                io-streams,
                 jingle,
                 monad-loops,
                 monads-tf,

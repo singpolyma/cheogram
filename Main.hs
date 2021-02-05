@@ -10,10 +10,10 @@ import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import Data.Traversable (forM, mapM)
 import System.Environment (getArgs)
-import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe, headZ)
+import Control.Error (readZ, syncIO, runExceptT, MaybeT(..), hoistMaybe, headZ, hush)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
-import Network.URI (parseURI, uriPath)
+import Network.URI (parseURI, uriPath, escapeURIString)
 import Network.HostAndPort (maybeHostAndPort)
 import System.Random (Random(randomR), getStdRandom)
 import System.Random.Shuffle (shuffleM)
@@ -29,6 +29,7 @@ import qualified UnexceptionalIO as UIO
 import qualified Dhall
 import qualified Dhall.Core as Dhall hiding (Decoder)
 import qualified Jingle
+import qualified Jingle.StoreChunks as Jingle
 import qualified Network.Socket as Socket
 import qualified Data.CaseInsensitive as CI
 import qualified Data.Text as T
@@ -43,6 +44,8 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Database.TokyoCabinet as TC
 import qualified Database.Redis as Redis
 import qualified Text.Regex.PCRE.Light as PCRE
+import qualified Network.Http.Client as HTTP
+import qualified System.IO.Streams as Streams
 import Network.Protocol.XMPP as XMPP -- should import qualified
 
 import Util
@@ -1025,23 +1028,49 @@ participantJid payloads =
 	elementChildren =<<
 	isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads
 
-cacheOneOOB :: (Unexceptional m) => XML.Element -> m ((Text, Text), XML.Element)
-cacheOneOOB oob
-	| [url] <- (mconcat . XML.elementText) <$> urls =
-		return ((url, url), oob)
+cacheHTTP :: (Unexceptional m) => FilePath -> Text -> m (Either IOError FilePath)
+cacheHTTP jingleStore url =
+		UIO.fromIO' (userError . show) $
+		HTTP.get (encodeUtf8 url) $ \response body -> UIO.runEitherIO $
+			if HTTP.getStatusCode response == 200 then
+				fmap (fmap (\(fp,_,_,_) -> fp)) $
+				Jingle.storeChunks Nothing jingleStore
+				(escapeURIString isAlpha (textToString url))
+				(hush <$> UIO.fromIO (fromMaybe mempty <$> Streams.read body))
+			else
+				return $ Left $ userError "Response was not 200 OK"
+
+cacheOneOOB :: (Unexceptional m) => FilePath -> Text -> XML.Element -> m (Maybe (Text, Text), XML.Element)
+cacheOneOOB jingleStore jingleStoreURL oob
+	| [url] <- (mconcat . XML.elementText) <$> urls = do
+		cacheResult <- cacheHTTP jingleStore url
+		case cacheResult of
+			Left err -> do
+				log "cacheOneOOB" err
+				return (Nothing, oob)
+			Right path ->
+				let url' = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) in
+				return (
+					Just (url, url'),
+					oob {
+						XML.elementNodes =
+							map XML.NodeElement
+							(mkElement urlName url' : rest)
+					}
+				)
 	| otherwise = do
 		log "cacheOneOOB MALFORMED" oob
-		return ((mempty, mempty), oob)
+		return (Nothing, oob)
 	where
 	urlName = s"{jabber:x:oob}url"
 	(urls, rest) = partition (\el -> XML.elementName el == urlName) (elementChildren oob)
 
-cacheOOB :: (Unexceptional m) => XMPP.Message -> m XMPP.Message
-cacheOOB m@(XMPP.Message { XMPP.messagePayloads = payloads }) = do
-	(replacements, oobs') <- unzip <$> mapM cacheOneOOB oobs
+cacheOOB :: (Unexceptional m) => FilePath -> Text -> XMPP.Message -> m XMPP.Message
+cacheOOB jingleStore jingleStoreURL m@(XMPP.Message { XMPP.messagePayloads = payloads }) = do
+	(replacements, oobs') <- unzip <$> mapM (cacheOneOOB jingleStore jingleStoreURL) oobs
 	let body' =
 		(mkElement bodyName .: foldl (\body (a, b) -> T.replace a b body)) <$>
-		(map (mconcat . XML.elementText) body) <*> pure replacements
+		(map (mconcat . XML.elementText) body) <*> pure (catMaybes replacements)
 	return $ m { XMPP.messagePayloads = noOobsNoBody ++ oobs' ++ body' }
 	where
 	oobName = s"{jabber:x:oob}x"
@@ -1049,7 +1078,7 @@ cacheOOB m@(XMPP.Message { XMPP.messagePayloads = payloads }) = do
 	(body, noOobsNoBody) = partition (\el -> XML.elementName el == bodyName) noOobs
 	(oobs, noOobs) = partition (\el -> XML.elementName el == oobName) payloads
 
-component db redis pushStatsd backendHost did adhocBotIQReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
+component db redis pushStatsd backendHost did cacheOOB adhocBotIQReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
 	sendThread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 
@@ -1195,7 +1224,7 @@ component db redis pushStatsd backendHost did adhocBotIQReceiver adhocBotMessage
 					let toResourceSuffix = maybe mempty (s"/"++) (strResource <$> jidResource to)
 					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
 					case (fmap fromString maybeRoute, parseJID (unescapeJid localpart ++ toResourceSuffix), mapToComponent from) of
-						(Just route, Just routeTo, Just componentFrom) | route == strDomain (jidDomain from) -> do
+						(Just route, Just routeTo, Just componentFrom) | route == strDomain (jidDomain from) ->
 							(sendToComponent . receivedStanza) =<< mapReceivedMessageM cacheOOB (receivedStanzaFromTo componentFrom routeTo stanza)
 						_ | Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to -> do
 							sendToComponent $ stanzaError stanza $
@@ -1223,7 +1252,7 @@ component db redis pushStatsd backendHost did adhocBotIQReceiver adhocBotMessage
 				  (nameNamespace $ elementName p) `elem` [Just (s"urn:xmpp:jingle:1"), Just (s"http://jabber.org/protocol/ibb")] -> do
 					jingleHandler iq
 				| otherwise -> liftIO $
-					mapM_ sendToComponent =<< componentStanza db backendTo registrationJids (adhocBotMessage, cacheOOB jingleStore jingleStoreURL) toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid stanza
+					mapM_ sendToComponent =<< componentStanza db backendTo registrationJids (adhocBotMessage, cacheOOB) toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid stanza
 	where
 	mapToComponent = mapToBackend (formatJID componentJid)
 	sendToComponent = atomically . writeTChan toComponent
@@ -1998,8 +2027,10 @@ main = do
 						}
 				)
 
+			let pushStatsd = void . UIO.fromIO . StatsD.push statsd
+
 			log "" "runComponent STARTING"
 
 			log "runComponent ENDED" =<< runComponent (Server componentJid host (PortNumber port)) secret
-				(component db redis (void . UIO.fromIO . StatsD.push statsd) backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+				(component db redis (UIO.lift . pushStatsd) backendHost did (cacheOOB jingleStore jingleStoreURL) adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
