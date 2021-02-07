@@ -1040,15 +1040,17 @@ cacheHTTP jingleStore url =
 			else
 				return $ Left $ userError "Response was not 200 OK"
 
-cacheOneOOB :: (Unexceptional m) => FilePath -> Text -> XML.Element -> m (Maybe (Text, Text), XML.Element)
-cacheOneOOB jingleStore jingleStoreURL oob
+cacheOneOOB :: (Unexceptional m) => ([StatsD.Stat] -> m ()) -> FilePath -> Text -> XML.Element -> m (Maybe (Text, Text), XML.Element)
+cacheOneOOB pushStatsd jingleStore jingleStoreURL oob
 	| [url] <- (mconcat . XML.elementText) <$> urls = do
 		cacheResult <- cacheHTTP jingleStore url
 		case cacheResult of
 			Left err -> do
+				pushStatsd [StatsD.stat ["cache", "oob", "failure"] 1 "c" Nothing]
 				log "cacheOneOOB" err
 				return (Nothing, oob)
 			Right path ->
+				pushStatsd [StatsD.stat ["cache", "oob", "success"] 1 "c" Nothing] >>
 				let url' = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) in
 				return (
 					Just (url, url'),
@@ -1065,9 +1067,9 @@ cacheOneOOB jingleStore jingleStoreURL oob
 	urlName = s"{jabber:x:oob}url"
 	(urls, rest) = partition (\el -> XML.elementName el == urlName) (elementChildren oob)
 
-cacheOOB :: (Unexceptional m) => FilePath -> Text -> XMPP.Message -> m XMPP.Message
-cacheOOB jingleStore jingleStoreURL m@(XMPP.Message { XMPP.messagePayloads = payloads }) = do
-	(replacements, oobs') <- unzip <$> mapM (cacheOneOOB jingleStore jingleStoreURL) oobs
+cacheOOB :: (Unexceptional m) => ([StatsD.Stat] -> m ()) -> FilePath -> Text -> XMPP.Message -> m XMPP.Message
+cacheOOB pushStatsd jingleStore jingleStoreURL m@(XMPP.Message { XMPP.messagePayloads = payloads }) = do
+	(replacements, oobs') <- unzip <$> mapM (cacheOneOOB pushStatsd jingleStore jingleStoreURL) oobs
 	let body' =
 		(mkElement bodyName .: foldl (\body (a, b) -> T.replace a b body)) <$>
 		(map (mconcat . XML.elementText) body) <*> pure (catMaybes replacements)
@@ -2032,5 +2034,5 @@ main = do
 			log "" "runComponent STARTING"
 
 			log "runComponent ENDED" =<< runComponent (Server componentJid host (PortNumber port)) secret
-				(component db redis (UIO.lift . pushStatsd) backendHost did (cacheOOB jingleStore jingleStoreURL) adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+				(component db redis (UIO.lift . pushStatsd) backendHost did (cacheOOB (UIO.lift . pushStatsd) jingleStore jingleStoreURL) adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
