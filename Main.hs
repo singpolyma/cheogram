@@ -1972,10 +1972,8 @@ main = do
 						}
 				)
 
-			forever $ do
-				log "" "runComponent STARTING"
+			log "" "runComponent STARTING"
 
-				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
-					runComponent (Server componentJid host (PortNumber port)) secret
-						(component db redis (void . UIO.fromIO . StatsD.push statsd) backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+			log "runComponent ENDED" =<< runComponent (Server componentJid host (PortNumber port)) secret
+				(component db redis (void . UIO.fromIO . StatsD.push statsd) backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
