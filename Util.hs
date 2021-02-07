@@ -2,6 +2,7 @@ module Util where
 
 import Prelude ()
 import BasicPrelude
+import Control.Concurrent
 import Control.Concurrent.STM (STM, atomically)
 import Data.Word (Word16)
 import Data.Bits (shiftL, (.|.))
@@ -16,6 +17,7 @@ import Data.Digest.Pure.SHA (sha1, bytestringDigest)
 import Data.Void (absurd)
 import UnexceptionalIO (Unexceptional)
 import qualified UnexceptionalIO       as UIO
+import qualified Control.Exception as Ex
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Network.Protocol.XMPP as XMPP
@@ -218,3 +220,20 @@ mkSMS from to txt = (XMPP.emptyMessage XMPP.MessageChat) {
 	XMPP.messageFrom = Just from,
 	XMPP.messagePayloads = [XML.Element (fromString "{jabber:component:accept}body") [] [XML.NodeContent $ XML.ContentText txt]]
 }
+
+castException :: (Ex.Exception e1, Ex.Exception e2) => e1 -> Maybe e2
+castException = Ex.fromException . Ex.toException
+
+-- Re-throws all by ThreadKilled async to parent thread
+-- Makes sync child exceptions async in parent, which is a bit sloppy
+forkXMPP :: XMPP.XMPP () -> XMPP.XMPP ThreadId
+forkXMPP kid = do
+	parent <- liftIO myThreadId
+	session <- XMPP.getSession
+	liftIO $ forkFinally
+		(void $ XMPP.runXMPP session kid)
+		(either (handler parent) (const $ return ()))
+	where
+	handler parent e
+		| Just Ex.ThreadKilled <- castException e = return ()
+		| otherwise = throwTo parent e

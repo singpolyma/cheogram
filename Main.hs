@@ -127,11 +127,6 @@ getDirectInvitation m = do
 		) <*>
 		Just (attributeText (fromString "password") x)
 
-forkXMPP :: XMPP () -> XMPP ThreadId
-forkXMPP kid = do
-	session <- getSession
-	liftIO $ forkIO $ void $ runXMPP session kid
-
 nickFor db jid existingRoom
 	| fmap bareTxt existingRoom == Just bareFrom = return $ fromMaybe (fromString "nonick") resourceFrom
 	| Just tel <- mfilter isE164 (strNode <$> jidNode jid) = do
