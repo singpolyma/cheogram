@@ -36,6 +36,9 @@ log tag x = fromIO_ $ do
 s :: (IsString a) => String -> a
 s = fromString
 
+(.:) :: (c -> d) -> (a -> b -> c) -> a -> b -> d
+(.:) = (.) . (.)
+
 fromIO_ :: (Unexceptional m) => IO a -> m a
 fromIO_ = fmap (either absurd id) . UIO.fromIO' (error . show)
 
@@ -218,7 +221,7 @@ mkSMS :: XMPP.JID -> XMPP.JID -> Text -> XMPP.Message
 mkSMS from to txt = (XMPP.emptyMessage XMPP.MessageChat) {
 	XMPP.messageTo = Just to,
 	XMPP.messageFrom = Just from,
-	XMPP.messagePayloads = [XML.Element (fromString "{jabber:component:accept}body") [] [XML.NodeContent $ XML.ContentText txt]]
+	XMPP.messagePayloads = [mkElement (s"{jabber:component:accept}body") txt]
 }
 
 castException :: (Ex.Exception e1, Ex.Exception e2) => e1 -> Maybe e2
@@ -237,3 +240,13 @@ forkXMPP kid = do
 	handler parent e
 		| Just Ex.ThreadKilled <- castException e = return ()
 		| otherwise = throwTo parent e
+
+mkElement :: XML.Name -> Text -> XML.Element
+mkElement name txt = XML.Element name [] [XML.NodeContent $ XML.ContentText txt]
+
+mapReceivedMessageM :: (Applicative f) =>
+	  (XMPP.Message -> f XMPP.Message)
+	-> XMPP.ReceivedStanza
+	-> f XMPP.ReceivedStanza
+mapReceivedMessageM f (XMPP.ReceivedMessage m) = XMPP.ReceivedMessage <$> f m
+mapReceivedMessageM _ s = pure s

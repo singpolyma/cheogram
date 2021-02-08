@@ -10,6 +10,7 @@ packages:
 - libgnutls28-dev
 - libgsasl7-dev
 - libpcre3-dev
+- libssl-dev
 - libtokyocabinet-dev
 - libxml2-dev
 - zlib1g-dev

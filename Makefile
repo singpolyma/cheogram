@@ -1,4 +1,4 @@
-GHCFLAGS=-Wall -Wno-tabs -fno-warn-name-shadowing -XHaskell2010 -O2
+GHCFLAGS=-Wall -Wno-tabs -Wno-orphans -Wno-name-shadowing -XHaskell2010 -O2 -threaded
 HLINTFLAGS=-XHaskell2010 -XCPP -i 'Use camelCase' -i 'Use String' -i 'Use head' -i 'Use string literal' -i 'Use list comprehension'
 VERSION=0.0.1
 
