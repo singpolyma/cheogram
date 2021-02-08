@@ -15,7 +15,7 @@ import qualified Data.Attoparsec.Text as Atto
 import qualified Data.Bool.HT as HT
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import qualified Data.UUID as UUID ( toString )
+import qualified Data.UUID as UUID ( toString, toText )
 import qualified Data.UUID.V1 as UUID ( nextUUID )
 import qualified Database.TokyoCabinet as TC
 import qualified UnexceptionalIO as UIO
@@ -29,6 +29,11 @@ sessionLifespan :: Int
 sessionLifespan = 60 * 60 * seconds
 	where
 	seconds = 1000000
+
+addOriginUUID :: (UIO.Unexceptional m) => XMPP.Message -> m XMPP.Message
+addOriginUUID msg = maybe msg (addTag msg) <$> fromIO_ UUID.nextUUID
+	where
+	addTag msg uuid = msg { messagePayloads = Element (s"{urn:xmpp:sid:0}origin-id") [(s"id", [ContentText $ UUID.toText uuid])] [] : messagePayloads msg }
 
 botHelp :: IQ -> Maybe Message
 botHelp (IQ { iqTo = Just to, iqFrom = Just from, iqPayload = Just payload }) =
@@ -270,7 +275,7 @@ desc = mfilter (not . T.null) . Just . mconcat .
 sendHelp :: (UIO.Unexceptional m, TC.TCDB db) =>
 	   db
 	-> JID
-	-> (XMPP.Message -> STM ())
+	-> (XMPP.Message -> m ())
 	-> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ)))
 	-> JID
 	-> JID
@@ -283,14 +288,14 @@ sendHelp db componentJid sendMessage sendIQ from routeFrom = do
 			let helpMessage = botHelp $ commandList componentJid Nothing componentJid from $
 				isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren =<< maybeToList (XMPP.iqPayload =<< mfilter ((== XMPP.IQResult) . XMPP.iqType) mreply)
 			case helpMessage of
-				Just msg -> atomicUIO $ sendMessage msg
+				Just msg -> sendMessage msg
 				Nothing -> log "INVALID HELP MESSAGE" mreply
 		Nothing ->
 			case botHelp $ commandList componentJid Nothing componentJid from [] of
-				Just msg -> atomicUIO $ sendMessage msg
+				Just msg -> sendMessage msg
 				Nothing -> log "INVALID HELP MESSAGE" ()
 
-adhocBotRunCommand :: (TC.TCDB db, UIO.Unexceptional m) => db -> JID -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> JID -> Text -> [Element] -> m ()
+adhocBotRunCommand :: (TC.TCDB db, UIO.Unexceptional m) => db -> JID -> JID -> (XMPP.Message -> m ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> JID -> Text -> [Element] -> m ()
 adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body cmdEls = do
 	let (nodes, cmds) = unzip $ mapMaybe (\el -> (,) <$> attributeText (s"node") el <*> pure el) cmdEls
 	case snd <$> find (\(prefixes, _) -> Set.member body prefixes) (zip (uniquePrefix nodes) cmds) of
@@ -310,7 +315,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 				| IQResult == iqType resultIQ,
 				  Just payload <- iqPayload resultIQ,
 				  [note] <- isNamed (s"{http://jabber.org/protocol/commands}note") =<< elementChildren payload ->
-					atomicUIO $ sendMessage $ mkSMS componentJid from $ mconcat $ elementText note
+					sendMessage $ mkSMS componentJid from $ mconcat $ elementText note
 				| IQResult == iqType resultIQ,
 				  Just payload <- iqPayload resultIQ,
 				  Just sessionid <- attributeText (s"sessionid") payload,
@@ -323,7 +328,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 						iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText cmd]), (s"sessionid", [ContentText sessionid]), (s"action", [ContentText $ s"cancel"])] []
 					}
 					let cancel = void . atomicUIO =<< UIO.lift (sendIQ cancelIQ)
-					let sendText = atomicUIO . sendMessage . threadedMessage . mkSMS componentJid from
+					let sendText = sendMessage . threadedMessage . mkSMS componentJid from
 					let cancelText = sendText . ((cmd ++ s" ") ++)
 					forM_ intro sendText
 					returnForm <- adhocBotAnswerForm sendText (withCancel sessionLifespan cancelText cancel getMessage) form
@@ -337,10 +342,10 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 						iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") payload]), (s"sessionid", [ContentText sessionid]), (s"action", [ContentText defaultAction])] [NodeElement returnForm]
 					}
 					sendAndRespondTo Nothing cmdIQ'
-				| otherwise -> atomicUIO $ sendMessage $ mkSMS componentJid from (s"Command error")
-			Nothing -> atomicUIO $ sendMessage $ mkSMS componentJid from (s"Command timed out")
+				| otherwise -> sendMessage $ mkSMS componentJid from (s"Command error")
+			Nothing -> sendMessage $ mkSMS componentJid from (s"Command timed out")
 
-adhocBotSession :: (UIO.Unexceptional m, TC.TCDB db) => db -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> XMPP.Message-> m ()
+adhocBotSession :: (UIO.Unexceptional m, TC.TCDB db) => db -> JID -> (XMPP.Message -> m ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> XMPP.Message-> m ()
 adhocBotSession db componentJid sendMessage sendIQ getMessage message@(XMPP.Message { XMPP.messageFrom = Just from })
 	| Just body <- getBody "jabber:component:accept" message = do
 		maybeRoute <- fmap (join . hush) $ UIO.fromIO $ TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
@@ -348,11 +353,12 @@ adhocBotSession db componentJid sendMessage sendIQ getMessage message@(XMPP.Mess
 			Just route -> do
 				mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
 				case iqPayload =<< mfilter ((==IQResult) . iqType) mreply of
-					Just reply -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body $ elementChildren reply ++ internalCommands
-					Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body internalCommands
-			Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body internalCommands
-	| otherwise = sendHelp db componentJid sendMessage sendIQ from routeFrom
+					Just reply -> adhocBotRunCommand db componentJid routeFrom sendMessage' sendIQ getMessage from body $ elementChildren reply ++ internalCommands
+					Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage' sendIQ getMessage from body internalCommands
+			Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage' sendIQ getMessage from body internalCommands
+	| otherwise = sendHelp db componentJid sendMessage' sendIQ from routeFrom
 	where
 	internalCommands = elementChildren =<< maybeToList (iqPayload $ commandList componentJid Nothing componentJid from [])
 	Just routeFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/adhocbot"
+	sendMessage' = sendMessage <=< addOriginUUID
 adhocBotSession _ _ _ _ _ m = log "BAD ADHOC BOT MESSAGE" m

@@ -1828,7 +1828,7 @@ joinPartDebouncer db backendHost sendToComponent componentJid toRoomPresences to
 			(_, state') -> return state'
 
 
-adhocBotManager :: (UIO.Unexceptional m, TC.TCDB db) => db -> JID -> (XMPP.Message -> STM ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> (STM XMPP.Message) -> m ()
+adhocBotManager :: (UIO.Unexceptional m, TC.TCDB db) => db -> JID -> (XMPP.Message -> UIO.UIO ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> (STM XMPP.Message) -> m ()
 adhocBotManager db componentJid sendMessage sendIQ messages = do
 	cleanupChan <- atomicUIO newTChan
 	statefulManager cleanupChan Map.empty
@@ -1935,7 +1935,7 @@ main = do
 
 			(adhocBotIQSender, adhocBotIQReceiver) <- iqManager $ atomicUIO . writeTChan sendToComponent . mkStanzaRec
 			adhocBotMessages <- atomically newTChan
-			void $ forkIO $ adhocBotManager db componentJid (writeTChan sendToComponent . mkStanzaRec) adhocBotIQSender (readTChan adhocBotMessages)
+			void $ forkIO $ adhocBotManager db componentJid (atomicUIO . writeTChan sendToComponent . mkStanzaRec) adhocBotIQSender (readTChan adhocBotMessages)
 
 			void $ forkIO $ joinPartDebouncer db backendHost (atomically . writeTChan sendToComponent) componentJid toRoomPresences toJoinPartDebouncer
 			void $ forkIO $ roomPresences db toRoomPresences
