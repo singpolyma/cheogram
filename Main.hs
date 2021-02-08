@@ -127,11 +127,6 @@ getDirectInvitation m = do
 		) <*>
 		Just (attributeText (fromString "password") x)
 
-forkXMPP :: XMPP () -> XMPP ThreadId
-forkXMPP kid = do
-	session <- getSession
-	liftIO $ forkIO $ void $ runXMPP session kid
-
 nickFor db jid existingRoom
 	| fmap bareTxt existingRoom == Just bareFrom = return $ fromMaybe (fromString "nonick") resourceFrom
 	| Just tel <- mfilter isE164 (strNode <$> jidNode jid) = do
@@ -1977,10 +1972,8 @@ main = do
 						}
 				)
 
-			forever $ do
-				log "" "runComponent STARTING"
+			log "" "runComponent STARTING"
 
-				(log "runComponent ENDED" <=< (runExceptT . syncIO)) $
-					runComponent (Server componentJid host (PortNumber port)) secret
-						(component db redis (void . UIO.fromIO . StatsD.push statsd) backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+			log "runComponent ENDED" =<< runComponent (Server componentJid host (PortNumber port)) secret
+				(component db redis (void . UIO.fromIO . StatsD.push statsd) backendHost did adhocBotIQReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
