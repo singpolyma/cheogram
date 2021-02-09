@@ -41,7 +41,7 @@ executable cheogram
                 HostAndPort,
                 HTTP,
                 http-types,
-                http-streams,
+                http-streams < 0.8.6.1,
                 hstatsd,
                 io-streams,
                 jingle,
