@@ -1030,15 +1030,15 @@ participantJid payloads =
 
 cacheHTTP :: (Unexceptional m) => FilePath -> Text -> m (Either IOError FilePath)
 cacheHTTP jingleStore url =
-		UIO.fromIO' (userError . show) $
-		HTTP.get (encodeUtf8 url) $ \response body -> UIO.runEitherIO $
-			if HTTP.getStatusCode response == 200 then
-				fmap (fmap (\(fp,_,_,_) -> fp)) $
-				Jingle.storeChunks Nothing jingleStore
-				(escapeURIString isAlpha (textToString url))
-				(hush <$> UIO.fromIO (fromMaybe mempty <$> Streams.read body))
-			else
-				return $ Left $ userError "Response was not 200 OK"
+	UIO.fromIO' (userError . show) $
+	HTTP.get (encodeUtf8 url) $ \response body -> UIO.runEitherIO $
+		if HTTP.getStatusCode response == 200 then
+			fmap (fmap (\(fp,_,_,_) -> fp)) $
+			Jingle.storeChunks Nothing jingleStore
+			(escapeURIString isAlpha (textToString url))
+			(hush <$> UIO.fromIO (fromMaybe mempty <$> Streams.read body))
+		else
+			return $ Left $ userError "Response was not 200 OK"
 
 cacheOneOOB :: (Unexceptional m) => ([StatsD.Stat] -> m ()) -> FilePath -> Text -> XML.Element -> m (Maybe (Text, Text), XML.Element)
 cacheOneOOB pushStatsd jingleStore jingleStoreURL oob
