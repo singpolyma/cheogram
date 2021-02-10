@@ -1144,9 +1144,6 @@ component db redis pushStatsd backendHost did cacheOOB adhocBotIQReceiver adhocB
 				void $ Redis.runRedis redis $ do
 					Redis.hdel (encodeUtf8 $ bareTxt from) [encodeUtf8 $ maybe mempty strResource $ jidResource from]
 					Redis.hdel (encodeUtf8 $ cheogramBareJid) [encodeUtf8 $ maybe mempty strResource $ jidResource from]
-			(ReceivedIQ iq@(IQ { iqType = IQResult, iqTo = Just to }))
-			  | (strResource <$> jidResource to) == Just (s"adhocbot") ->
-				adhocBotIQReceiver iq
 			(ReceivedIQ iq@(IQ { iqType = IQResult, iqFrom = Just from }))
 				| Just query <- child (s"{http://jabber.org/protocol/disco#info}query") iq -> do
 				let cheogramBareJid = escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid
@@ -1161,6 +1158,9 @@ component db redis pushStatsd backendHost did cacheOOB adhocBotIQReceiver adhocB
 					Redis.hset (encodeUtf8 $ cheogramBareJid) (encodeUtf8 $ maybe mempty strResource $ jidResource from) val
 			_ -> return ()
 		case (stanzaFrom $ receivedStanza stanza, stanzaTo $ receivedStanza stanza, mapToBackend backendHost =<< stanzaTo (receivedStanza stanza), fmap strNode . jidNode =<< stanzaTo (receivedStanza stanza), stanza) of
+			(_, Just to, _, _, ReceivedIQ iq@(IQ { iqType = IQResult }))
+			  | (strResource <$> jidResource to) == Just (s"adhocbot") ->
+				adhocBotIQReceiver iq
 			(Just from, Just to, _, _, _)
 				| strDomain (jidDomain from) == backendHost,
 				  to == componentJid ->
@@ -1173,10 +1173,6 @@ component db redis pushStatsd backendHost did cacheOOB adhocBotIQReceiver adhocB
 							  fmap strNode (jidNode from) /= Just did ->
 								mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
 						_ -> log "backend no match" stanza
-				| (strResource <$> jidResource to) == Just (s"adhocbot") ->
-					-- If this message is to the adhoc bot, stop processing it
-					-- We're already handling it in the other thread
-					return ()
 			(Just from, Just to, Nothing, Just localpart, ReceivedMessage m)
 				| Just txt <- getBody "jabber:component:accept" m,
 				  (T.length txt == 144 || T.length txt == 145) && (s"CHEOGRAM") `T.isPrefixOf` txt -> liftIO $ do -- the length of our token messages
