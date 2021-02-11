@@ -1060,7 +1060,11 @@ cacheOneOOB pushStatsd jingleStore jingleStoreURL oob
 				return (Nothing, oob)
 			Right path ->
 				pushStatsd [StatsD.stat ["cache", "oob", "success"] 1 "c" Nothing] >>
-				let url' = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) in
+				let
+					ext = T.takeWhileEnd (\c -> c /= '.' && c /= '/') url
+					extSuffix = if T.length ext <= 4 then s"." ++ ext else mempty
+					url' = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) ++ extSuffix
+				in
 				return (
 					Just (url, url'),
 					oob {
