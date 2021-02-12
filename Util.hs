@@ -232,14 +232,16 @@ castException = Ex.fromException . Ex.toException
 forkXMPP :: XMPP.XMPP () -> XMPP.XMPP ThreadId
 forkXMPP kid = do
 	parent <- liftIO myThreadId
-	session <- XMPP.getSession
-	liftIO $ forkFinally
-		(void $ XMPP.runXMPP session kid)
-		(either (handler parent) (const $ return ()))
+	forkFinallyXMPP kid (either (handler parent) (const $ return ()))
 	where
 	handler parent e
 		| Just Ex.ThreadKilled <- castException e = return ()
 		| otherwise = throwTo parent e
+
+forkFinallyXMPP :: XMPP.XMPP () -> (Either SomeException () -> IO ()) -> XMPP.XMPP ThreadId
+forkFinallyXMPP kid handler = do
+	session <- XMPP.getSession
+	liftIO $ forkFinally (void $ XMPP.runXMPP session kid) handler
 
 mkElement :: XML.Name -> Text -> XML.Element
 mkElement name txt = XML.Element name [] [XML.NodeContent $ XML.ContentText txt]

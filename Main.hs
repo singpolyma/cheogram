@@ -1170,7 +1170,7 @@ component db redis pushStatsd backendHost did cacheOOB adhocBotIQReceiver adhocB
 					Redis.hset (encodeUtf8 $ bareTxt from) (encodeUtf8 $ maybe mempty strResource $ jidResource from) val
 					Redis.hset (encodeUtf8 $ cheogramBareJid) (encodeUtf8 $ maybe mempty strResource $ jidResource from) val
 			_ -> return ()
-		case (stanzaFrom $ receivedStanza stanza, stanzaTo $ receivedStanza stanza, mapToBackend backendHost =<< stanzaTo (receivedStanza stanza), fmap strNode . jidNode =<< stanzaTo (receivedStanza stanza), stanza) of
+		flip forkFinallyXMPP (either (log "RECEIVE ONE" . show) return) $ case (stanzaFrom $ receivedStanza stanza, stanzaTo $ receivedStanza stanza, mapToBackend backendHost =<< stanzaTo (receivedStanza stanza), fmap strNode . jidNode =<< stanzaTo (receivedStanza stanza), stanza) of
 			(_, Just to, _, _, ReceivedIQ iq@(IQ { iqType = IQResult }))
 			  | (strResource <$> jidResource to) == Just (s"adhocbot") ->
 				adhocBotIQReceiver iq
