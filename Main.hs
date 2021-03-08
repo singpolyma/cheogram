@@ -1399,7 +1399,7 @@ data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | 
 parseCommand txt room nick componentJid
 	| Just jid <- stripCIPrefix (fromString "/invite ") txt =
 		InviteCmd <$> (
-			parseJIDrequireNode jid <|>
+			(maybeStripProxy <$> parseJIDrequireNode jid) <|>
 			telToJid jid (formatJID componentJid)
 		)
 	| Just room <- stripCIPrefix (fromString "/join ") txt =
@@ -1414,7 +1414,7 @@ parseCommand txt room nick componentJid
 	| Just input <- stripCIPrefix (fromString "/msg ") txt =
 		let (to, msg) = T.breakOn (fromString " ") input in
 		Whisper <$> (
-			parseJIDrequireNode to <|>
+			(maybeStripProxy <$> parseJIDrequireNode to) <|>
 			telToJid to (formatJID componentJid) <|>
 			(parseJID =<< fmap (\r -> bareTxt r <> fromString "/" <> to) room)
 		) <*> pure msg
@@ -1429,6 +1429,10 @@ parseCommand txt room nick componentJid
 	| citxt == fromString "/help" = Just Help
 	| otherwise = Just $ Send txt
 	where
+	maybeStripProxy jid
+		| Just _ <- normalizeTel =<< strNode <$> jidNode jid = jid
+		| jidDomain jid == jidDomain (componentJid) = fromMaybe jid $ proxiedJidToReal jid
+		| otherwise = jid
 	citxt = CI.mk txt
 
 getMessage (ReceivedMessage m) = Just m
