@@ -81,8 +81,9 @@ unescapeJid txt = fromString result
 			("20", ' '), ("22", '"'), ("26", '&'), ("27", '\''), ("2f", '/'), ("3a", ':'), ("3c", '<'), ("3e", '>'), ("40", '@'), ("5c", '\\')
 		]
 
+-- Matches any URL-ish text, but not x@x.tld forms
 autolinkRegex :: PCRE.Regex
-autolinkRegex = PCRE.compile (encodeUtf8 $ s"((http|https)://)?([a-z0-9-]+\\.)?[a-z0-9-]+(\\.[a-z]{2,6}){1,3}(/[a-z0-9.,_/~#&=;%+?-]*)?") [PCRE.caseless, PCRE.dotall]
+autolinkRegex = PCRE.compile (encodeUtf8 $ s"(?<!@)(?<=\\b)(?:((http|https)://)?([a-z0-9-]+\\.)?[a-z0-9-]+(\\.[a-z]{2,6}){1,3}(/[a-z0-9.,_/~#&=;%+?-]*)?)") [PCRE.caseless, PCRE.dotall]
 
 sanitizeSipLocalpart :: Text -> Maybe Text
 sanitizeSipLocalpart localpart
