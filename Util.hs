@@ -253,3 +253,11 @@ mapReceivedMessageM :: (Applicative f) =>
 	-> f XMPP.ReceivedStanza
 mapReceivedMessageM f (XMPP.ReceivedMessage m) = XMPP.ReceivedMessage <$> f m
 mapReceivedMessageM _ s = pure s
+
+iqReply :: Maybe XML.Element -> XMPP.IQ -> XMPP.IQ
+iqReply payload iq = iq {
+	XMPP.iqType = XMPP.IQResult,
+	XMPP.iqFrom = XMPP.iqTo iq,
+	XMPP.iqTo = XMPP.iqFrom iq,
+	XMPP.iqPayload = payload
+}
