@@ -181,7 +181,7 @@ telCapsStr extraVars =
 telAvailable from to disco =
 	(emptyPresence PresenceAvailable) {
 		presenceTo = Just to,
-		presenceFrom = Just from,
+		presenceFrom = Just fromWithResource,
 		presencePayloads = [
 			Element (s"{http://jabber.org/protocol/caps}c") [
 				(s"{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
@@ -191,6 +191,10 @@ telAvailable from to disco =
 		]
 	}
 	where
+	fromWithResource
+		| Nothing <- jidResource from,
+		  Just newFrom <- parseJID (bareTxt from ++ s"/tel") = newFrom
+		| otherwise = from
 	hash = T.decodeUtf8 $ Base64.encode $ LZ.toStrict $ bytestringDigest $ sha1 $ LZ.fromStrict $ T.encodeUtf8 $ telCapsStr disco
 
 nodeAttribute el =
