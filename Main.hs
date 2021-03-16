@@ -801,7 +801,10 @@ componentStanza (ComponentContext { db, processDirectMessageRouteConfig, compone
 	  attributeText (s"node") payload == Just (s"sip-proxy-set"),
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren payload,
 	  Just proxy <- getFormField form (s"sip-proxy") = do
-		True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) ++ "\0sip-proxy") $ T.unpack proxy
+		True <- if T.null proxy then
+			TC.runTCM $ TC.out db $ T.unpack (bareTxt from) ++ "\0sip-proxy"
+		else
+			TC.runTCM $ TC.put db (T.unpack (bareTxt from) ++ "\0sip-proxy") $ T.unpack proxy
 		return [mkStanzaRec $ iqReply Nothing iq]
 componentStanza _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
 	| iqType iq `elem` [IQGet, IQSet],
