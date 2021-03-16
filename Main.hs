@@ -1253,10 +1253,13 @@ component db redis pushStatsd backendHost did cacheOOB sendIQ iqReceiver adhocBo
 					-- TODO: should check if backend supports XEP-0033
 					-- TODO: fallback for no-backend case should work
 					mapM_ sendToComponent =<< componentMessage db componentJid m' Nothing (bareTxt from) (strResource <$> jidResource from) backendJid (getBody "jabber:component:accept" m')
-				| (s"sip.cheogram.com") == strDomain (jidDomain from) -> liftIO $
-					case (mapLocalpartToBackend (formatJID componentJid) =<< sanitizeSipLocalpart (maybe mempty strNode $ jidNode from), parseJID (unescapeJid localpart ++ (maybe mempty (s"/"++) (strResource <$> jidResource to)))) of
+				| (s"sip.cheogram.com") == strDomain (jidDomain from) -> liftIO $ do
+					let (toResource, fromResource)
+						| Just toResource <- T.stripPrefix (s"CHEOGRAM%outbound-sip%") =<< (strResource <$> jidResource to) = (toResource, s"tel")
+						| otherwise = (fromMaybe mempty (strResource <$> jidResource to), s"/sip:" ++ escapeJid (formatJID from))
+					case (mapLocalpartToBackend (formatJID componentJid) =<< sanitizeSipLocalpart (maybe mempty strNode $ jidNode from), parseJID (unescapeJid localpart ++ s"/" ++ toResource)) of
 						(Just componentFrom, Just routeTo) -> liftIO $ do
-							Just componentFromSip <- return $ parseJID (formatJID componentFrom ++ s"/sip:" ++ escapeJid (formatJID from))
+							Just componentFromSip <- return $ parseJID (formatJID componentFrom ++ s"/" ++ fromResource)
 							sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFromSip routeTo stanza
 						_ ->
 							sendToComponent $ stanzaError stanza $
@@ -2025,6 +2028,15 @@ main = do
 								]
 							]
 						}
+				) (\iq@(IQ { iqFrom = Just from, iqTo = Just to }) -> do
+					maybeProxy <- fmap (join . hush) $ UIO.fromIO (TC.runTCM (TC.get db (T.unpack (bareTxt from) ++ "\0sip-proxy")))
+					fromIO_ $ atomically $ writeTChan sendToComponent $ mkStanzaRec $ case maybeProxy of
+						Just proxy ->
+							rewriteJingleInitiatorResponder $ iq {
+								iqFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/CHEOGRAM%outbound-sip%" ++ fromMaybe mempty (strResource <$> jidResource from),
+								iqTo = parseJID $ escapeJid (fromMaybe mempty (strNode <$> jidNode to) ++ s"@" ++ T.pack proxy) ++ s"@sip.cheogram.com/sip"
+							}
+						Nothing -> iqNotImplemented iq
 				)
 
 			let pushStatsd = void . UIO.fromIO . StatsD.push statsd
