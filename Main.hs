@@ -9,7 +9,7 @@ import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import Data.Traversable (forM, mapM)
 import System.Environment (getArgs)
-import Control.Error (readZ, MaybeT(..), hoistMaybe, headZ, hush)
+import Control.Error (readZ, MaybeT(..), hoistMaybe, headZ, justZ, hush)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
 import Network.URI (parseURI, uriPath, escapeURIString)
@@ -170,8 +170,30 @@ telDiscoFeatures = [
 		s"urn:xmpp:jingle:transports:ibb:1"
 	]
 
-getTelFeatures db jid = do
-	maybeProxy <- TC.runTCM (TC.get db (T.unpack (bareTxt jid) ++ "\0sip-proxy") :: TC.TCM (Maybe String))
+getSipProxy :: TC.HDB -> JID -> (IQ -> UIO (STM (Maybe IQ))) -> JID -> IO (Maybe Text)
+getSipProxy db componentJid sendIQ jid = do
+	maybeProxy <- TC.runTCM $ TC.get db $ T.unpack (bareTxt jid) ++ "\0sip-proxy"
+	case maybeProxy of
+		Just proxy -> return $ Just $ T.pack proxy
+		Nothing ->
+			(extractSip =<<) <$> routeQueryStateful db componentJid sendIQ jid Nothing query
+	where
+	query jidTo jidFrom = return $ (emptyIQ IQGet) {
+			iqTo = Just jidTo,
+			iqFrom = Just jidFrom,
+			iqPayload = Just $ XML.Element (s"{urn:xmpp:extdisco:2}services") [
+				(s"type", [XML.ContentText $ s"sip"])
+			] []
+		}
+	extractSip (IQ { iqPayload = payload }) =
+		headZ $
+		(mapMaybe (attributeText (s"host")) $
+		filter (\el -> attributeText (s"type") el == Just (s"sip")) $
+		isNamed (s"{urn:xmpp:extdisco:2}service") =<<
+		elementChildren =<< (justZ payload))
+
+getTelFeatures db componentJid sendIQ jid = do
+	maybeProxy <- getSipProxy db componentJid sendIQ jid
 	log "TELFEATURES" (jid, maybeProxy)
 	return $ maybe [] (const $ [s"urn:xmpp:jingle:transports:ice-udp:1", s"urn:xmpp:jingle:apps:dtls:0", s"urn:xmpp:jingle:apps:rtp:1", s"urn:xmpp:jingle:apps:rtp:audio", s"urn:xmpp:jingle-message:0"]) maybeProxy
 
@@ -231,11 +253,11 @@ routeQueryOrReply db componentJid from smsJid resource query reply = do
 	where
 	maybeRouteFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/" ++ (fromString resource)
 
-routeQueryStateful db componentJid sendIQ from smsJid query = do
+routeQueryStateful db componentJid sendIQ from targetNode query = do
 	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
 	case (fmap fromString maybeRoute, maybeRouteFrom) of
 		(Just route, Just routeFrom) -> do
-			let routeTo = fromMaybe componentJid $ parseJID $ (maybe mempty (++ s"@") $ strNode <$> jidNode smsJid) ++ route
+			let Just routeTo = parseJID $ (maybe mempty (++ s"@") $ strNode <$> targetNode) ++ route
 			iqToSend <- query routeTo routeFrom
 			result <- atomicUIO =<< UIO.lift (sendIQ iqToSend)
 			return $ mfilter ((==IQResult) . iqType) result
@@ -243,8 +265,8 @@ routeQueryStateful db componentJid sendIQ from smsJid query = do
 	where
 	maybeRouteFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/IQMANAGER"
 
-routeDiscoStateful db componentJid sendIQ from smsJid node =
-	routeQueryStateful db componentJid sendIQ from smsJid (queryDiscoWithNode node)
+routeDiscoStateful db componentJid sendIQ from targetNode node =
+	routeQueryStateful db componentJid sendIQ from targetNode (queryDiscoWithNode node)
 
 routeDiscoOrReply db componentJid from smsJid resource node reply =
 	routeQueryOrReply db componentJid from smsJid resource (fmap (pure . mkStanzaRec) .: queryDiscoWithNode node) reply
@@ -677,10 +699,10 @@ componentStanza (ComponentContext { adhocBotMessage, ctxCacheOOB, componentJid }
 		atomicUIO $ adhocBotMessage m
 		return []
 	| otherwise = log "WEIRD BODYLESS MESSAGE DIRECT TO COMPONENT" m >> return []
-componentStanza (ComponentContext { db, componentJid, smsJid = Just smsJid }) (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
+componentStanza (ComponentContext { db, componentJid, sendIQ, smsJid = Just smsJid }) (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| [propose] <- isNamed (fromString "{urn:xmpp:jingle-message:0}propose") =<< messagePayloads m = do
 		let sid = fromMaybe mempty $ XML.attributeText (s"id") propose
-		telFeatures <- getTelFeatures db from
+		telFeatures <- getTelFeatures db componentJid sendIQ from
 		stanzas <- routeDiscoOrReply db componentJid from smsJid "CHEOGRAM%query-then-send-presence" Nothing $ telAvailable to from telFeatures
 		return $ (mkStanzaRec $ (XMPP.emptyMessage XMPP.MessageNormal) {
 				XMPP.messageID = Just $ s"proceed%" ++ sid,
@@ -882,8 +904,8 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ (IQ { iqType
 componentStanza (ComponentContext { db, sendIQ, smsJid = (Just smsJid), componentJid }) (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = Just id, iqPayload = Just p }))
 	| Just _ <- jidNode to,
 	  [q] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
-		maybeDiscoResult <- routeDiscoStateful db componentJid sendIQ from smsJid (nodeAttribute q)
-		telFeatures <- getTelFeatures db from
+		maybeDiscoResult <- routeDiscoStateful db componentJid sendIQ from (jidNode smsJid) (nodeAttribute q)
+		telFeatures <- getTelFeatures db componentJid sendIQ from
 		case maybeDiscoResult of
 			Just (IQ { iqPayload = Just discoResult }) -> return [
 					mkStanzaRec $ telDiscoInfo q id to from $ (telFeatures ++) $ mapMaybe (attributeText (fromString "var")) $
@@ -1011,14 +1033,14 @@ componentStanza (ComponentContext { componentJid }) (ReceivedIQ (IQ { iqType = t
 		else do
 			let items = isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren p
 			return [mkStanzaRec $ commandList componentJid iqId componentJid routeTo items]
-componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ (IQ { iqType = IQError, iqTo = Just to@(JID { jidNode = Just toNode }), iqFrom = Just from }))
+componentStanza (ComponentContext { db, componentJid, sendIQ }) (ReceivedIQ (IQ { iqType = IQError, iqTo = Just to@(JID { jidNode = Just toNode }), iqFrom = Just from }))
 	| fmap strResource (jidResource to) == Just (s"CHEOGRAM%query-then-send-presence"),
 	  Just routeTo <- parseJID (unescapeJid (strNode toNode)),
 	  Just fromNode <- jidNode from,
 	  Just routeFrom <- parseJID (strNode fromNode ++ s"@" ++ formatJID componentJid) = do
-		telFeatures <- getTelFeatures db routeTo
+		telFeatures <- getTelFeatures db componentJid sendIQ routeTo
 		return [ mkStanzaRec $ telAvailable routeFrom routeTo telFeatures ]
-componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to@(JID { jidNode = Just toNode }), iqFrom = Just from, iqPayload = Just p }))
+componentStanza (ComponentContext { db, componentJid, sendIQ }) (ReceivedIQ (IQ { iqType = IQResult, iqTo = Just to@(JID { jidNode = Just toNode }), iqFrom = Just from, iqPayload = Just p }))
 	| Just idAndResource <- T.stripPrefix (s"CHEOGRAM%query-then-send-ack%") . strResource =<< jidResource to,
 	  Just (messageId, resource) <- readZ $ T.unpack $ unescapeJid idAndResource,
 	  [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p,
@@ -1035,7 +1057,7 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ (IQ { iqType
 	  Just routeTo <- parseJID (unescapeJid (strNode toNode)),
 	  Just fromNode <- jidNode from,
 	  Just routeFrom <- parseJID (strNode fromNode ++ s"@" ++ formatJID componentJid) = do
-		telFeatures <- getTelFeatures db routeTo
+		telFeatures <- getTelFeatures db componentJid sendIQ routeTo
 		return [
 				mkStanzaRec $ telAvailable routeFrom routeTo $ (telFeatures ++) $ mapMaybe (attributeText (fromString "var")) $
 				isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query
@@ -2043,12 +2065,12 @@ main = do
 							]
 						}
 				) (\iq@(IQ { iqFrom = Just from, iqTo = Just to }) -> do
-					maybeProxy <- fmap (join . hush) $ UIO.fromIO (TC.runTCM (TC.get db (T.unpack (bareTxt from) ++ "\0sip-proxy")))
+					maybeProxy <- fmap (join . hush) $ UIO.fromIO $ getSipProxy db componentJid sendIQ from
 					fromIO_ $ atomically $ writeTChan sendToComponent $ mkStanzaRec $ case maybeProxy of
 						Just proxy ->
 							rewriteJingleInitiatorResponder $ iq {
 								iqFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/CHEOGRAM%outbound-sip%" ++ fromMaybe mempty (strResource <$> jidResource from),
-								iqTo = parseJID $ escapeJid (fromMaybe mempty (strNode <$> jidNode to) ++ s"@" ++ T.pack proxy) ++ s"@sip.cheogram.com/sip"
+								iqTo = parseJID $ escapeJid (fromMaybe mempty (strNode <$> jidNode to) ++ s"@" ++ proxy) ++ s"@sip.cheogram.com/sip"
 							}
 						Nothing -> iqNotImplemented iq
 				)
