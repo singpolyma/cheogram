@@ -173,7 +173,7 @@ telDiscoFeatures = [
 getTelFeatures db jid = do
 	maybeProxy <- TC.runTCM (TC.get db (T.unpack (bareTxt jid) ++ "\0sip-proxy") :: TC.TCM (Maybe String))
 	log "TELFEATURES" (jid, maybeProxy)
-	return $ maybe [] (const $ [s"urn:xmpp:jingle:transports:ice-udp:1", s"urn:xmpp:jingle:apps:dtls:0", s"urn:xmpp:jingle:apps:rtp:1", s"urn:xmpp:jingle:apps:rtp:audio"]) maybeProxy
+	return $ maybe [] (const $ [s"urn:xmpp:jingle:transports:ice-udp:1", s"urn:xmpp:jingle:apps:dtls:0", s"urn:xmpp:jingle:apps:rtp:1", s"urn:xmpp:jingle:apps:rtp:audio", s"urn:xmpp:jingle-message:0"]) maybeProxy
 
 telCapsStr extraVars =
 	s"client/sms//Cheogram<" ++ mconcat (intersperse (s"<") (sort (nub (telDiscoFeatures ++ extraVars)))) ++ s"<"
@@ -677,6 +677,20 @@ componentStanza (ComponentContext { adhocBotMessage, ctxCacheOOB, componentJid }
 		atomicUIO $ adhocBotMessage m
 		return []
 	| otherwise = log "WEIRD BODYLESS MESSAGE DIRECT TO COMPONENT" m >> return []
+componentStanza (ComponentContext { db, componentJid, smsJid = Just smsJid }) (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
+	| [propose] <- isNamed (fromString "{urn:xmpp:jingle-message:0}propose") =<< messagePayloads m = do
+		let sid = fromMaybe mempty $ XML.attributeText (s"id") propose
+		telFeatures <- getTelFeatures db from
+		stanzas <- routeDiscoOrReply db componentJid from smsJid "CHEOGRAM%query-then-send-presence" Nothing $ telAvailable to from telFeatures
+		return $ (mkStanzaRec $ (XMPP.emptyMessage XMPP.MessageNormal) {
+				XMPP.messageID = Just $ s"proceed%" ++ sid,
+				XMPP.messageTo = Just from,
+				XMPP.messageFrom = XMPP.parseJID $ bareTxt to ++ s"/tel",
+				XMPP.messagePayloads = [
+					XML.Element (s"{urn:xmpp:jingle-message:0}proceed")
+						[(s"id", [XML.ContentText sid])] []
+				]
+			}) : stanzas
 componentStanza _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
 	  not $ null $ code "104" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
