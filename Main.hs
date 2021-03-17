@@ -1256,7 +1256,7 @@ component db redis pushStatsd backendHost did cacheOOB sendIQ iqReceiver adhocBo
 				| (s"sip.cheogram.com") == strDomain (jidDomain from) -> liftIO $ do
 					let (toResource, fromResource)
 						| Just toResource <- T.stripPrefix (s"CHEOGRAM%outbound-sip%") =<< (strResource <$> jidResource to) = (toResource, s"tel")
-						| otherwise = (fromMaybe mempty (strResource <$> jidResource to), s"/sip:" ++ escapeJid (formatJID from))
+						| otherwise = (fromMaybe mempty (strResource <$> jidResource to), s"sip:" ++ escapeJid (formatJID from))
 					case (mapLocalpartToBackend (formatJID componentJid) =<< sanitizeSipLocalpart (maybe mempty strNode $ jidNode from), parseJID (unescapeJid localpart ++ s"/" ++ toResource)) of
 						(Just componentFrom, Just routeTo) -> liftIO $ do
 							Just componentFromSip <- return $ parseJID (formatJID componentFrom ++ s"/" ++ fromResource)
