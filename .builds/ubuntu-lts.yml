@@ -23,9 +23,8 @@ tasks:
 - cabal_update: |
     cabal update
 - dependencies: |
-    cabal install random-1.1
     cd jingle-xmpp
-    cabal install
+    cabal install --constraint="random <= 1.1" --constraint="attoparsec < 0.14"
     cd ..
     cd cheogram
     cabal install --enable-tests --only-dependencies
