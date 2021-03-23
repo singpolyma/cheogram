@@ -683,7 +683,7 @@ data ComponentContext = ComponentContext {
 	toRoomPresences :: TChan RoomPresences,
 	toRejoinManager :: TChan RejoinManagerCommand,
 	toJoinPartDebouncer :: TChan JoinPartDebounce,
-	processDirectMessageRouteConfig :: IQ -> IO IQ,
+	processDirectMessageRouteConfig :: IQ -> IO (Maybe IQ),
 	componentJid :: JID,
 	sendIQ :: IQ -> UIO (STM (Maybe IQ))
 }
@@ -799,42 +799,46 @@ componentStanza (ComponentContext { registrationJids, processDirectMessageRouteC
 				iqFrom = Just asFrom,
 				iqPayload = Just payload
 			}
-		let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
+		fmap (fromMaybe []) $ forM replyIQ $ \replyIQ -> do
+		--(\f -> maybe (return []) f replyIQ) $ \replyIQ -> do
+			let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
 
-		let subscribe = if attributeText (s"action") payload /= Just (s"complete") then [] else [
-				mkStanzaRec $ (emptyPresence PresenceSubscribe) {
-					presenceTo = Just asFrom,
-					presenceFrom = Just componentJid,
-					presencePayloads = [
-						Element (s"{jabber:component:accept}status") [] [
-							NodeContent $ ContentText $ s"Add this contact and then you can SMS by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs."
+			let subscribe = if attributeText (s"action") payload /= Just (s"complete") then [] else [
+					mkStanzaRec $ (emptyPresence PresenceSubscribe) {
+						presenceTo = Just asFrom,
+						presenceFrom = Just componentJid,
+						presencePayloads = [
+							Element (s"{jabber:component:accept}status") [] [
+								NodeContent $ ContentText $ s"Add this contact and then you can SMS by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs."
+							]
 						]
-					]
-				}
-			]
+					}
+				]
 
-		return $ subscribe ++ [mkStanzaRec $ replyIQ {
-			iqTo = if iqTo replyIQ == Just asFrom then Just from else iqTo replyIQ,
-			iqID = if iqType replyIQ == IQResult then iqID replyIQ else Just $ fromString $ show (formatJID from, formatJID asFrom, iqID replyIQ),
-			iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
-		}]
+			return $ subscribe ++ [mkStanzaRec $ replyIQ {
+				iqTo = if iqTo replyIQ == Just asFrom then Just from else iqTo replyIQ,
+				iqID = if iqType replyIQ == IQResult then iqID replyIQ else Just $ fromString $ show (formatJID from, formatJID asFrom, iqID replyIQ),
+				iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
+			}]
 componentStanza (ComponentContext { processDirectMessageRouteConfig, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to }))
 	| fmap strResource (jidResource to) == Just (s"CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName),
 	  Just (fwdBy, onBehalf, iqId) <- readZ . T.unpack =<< iqID iq = do
 		replyIQ <- processDirectMessageRouteConfig (iq { iqID = iqId })
-		let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
-		return [mkStanzaRec $ replyIQ {
-			iqTo = if fmap bareTxt (iqTo replyIQ) == Just onBehalf then parseJID fwdBy else iqTo replyIQ,
-			iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
-		}]
+		fmap (fromMaybe []) $ forM replyIQ $ \replyIQ -> do
+			let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
+			return [mkStanzaRec $ replyIQ {
+				iqTo = if fmap bareTxt (iqTo replyIQ) == Just onBehalf then parseJID fwdBy else iqTo replyIQ,
+				iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
+			}]
 componentStanza (ComponentContext { processDirectMessageRouteConfig, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = payload }))
 	| (jidNode to == Nothing && fmap elementName payload == Just (s"{http://jabber.org/protocol/commands}command") && (attributeText (s"node") =<< payload) == Just ConfigureDirectMessageRoute.nodeName) ||
 	  fmap strResource (jidResource to) == Just (s"CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName) = do
 		replyIQ <- processDirectMessageRouteConfig iq
-		let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
-		return [mkStanzaRec $ replyIQ {
-			iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
-		}]
+		fmap (fromMaybe []) $ forM replyIQ $ \replyIQ -> do
+			let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
+			return [mkStanzaRec $ replyIQ {
+				iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
+			}]
 componentStanza (ComponentContext { db, processDirectMessageRouteConfig, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = Just payload, iqFrom = Just from }))
 	| jidNode to == Nothing,
 	  elementName payload == s"{http://jabber.org/protocol/commands}command",

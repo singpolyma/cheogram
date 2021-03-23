@@ -21,7 +21,7 @@ import Util
 
 newtype SessionID = SessionID UUID deriving (Ord, Eq, Show)
 
-main :: (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> IO (XMPP.IQ -> IO XMPP.IQ)
+main :: (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> IO (XMPP.IQ -> IO (Maybe XMPP.IQ))
 main getRouteJid setRouteJid = do
 	stanzas <- newTQueueIO
 	void $ forkIO $ iterateM_ (\sessions -> do
@@ -37,22 +37,25 @@ main getRouteJid setRouteJid = do
 			atomically $ readTMVar result
 		)
 
-processOneIQ :: (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> XMPP.IQ -> IO (Map SessionID (Session, UTCTime), XMPP.IQ)
+processOneIQ :: (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> XMPP.IQ -> IO (Map SessionID (Session, UTCTime), Maybe XMPP.IQ)
 processOneIQ getRouteJid setRouteJid sessions iq@(XMPP.IQ { XMPP.iqID = Just iqID, XMPP.iqFrom = Just from, XMPP.iqPayload = realPayload })
 	| Just sid <- sessionIDFromText . snd =<< T.uncons =<< T.stripPrefix (s"ConfigureDirectMessageRoute") iqID,
           XMPP.iqType iq == XMPP.IQResult || XMPP.iqType iq == XMPP.IQError =
-		lookupAndStepSession setRouteJid sessions sid iqID from payload
+		(fmap Just) <$> lookupAndStepSession setRouteJid sessions sid iqID from payload
 	| elementName payload /= s"{http://jabber.org/protocol/commands}command" ||
 	  attributeText (s"node") payload /= Just nodeName = do
 		log "ConfigureDirectMessageRoute.processOneIQ BAD INPUT" (elementName payload, attributeText (s"node") payload)
-		return (sessions, iqError (Just iqID) (Just from) "cancel" "feature-not-implemented" Nothing)
+		if XMPP.iqType iq == XMPP.IQError then
+			return (sessions, Nothing)
+		else
+			return (sessions, Just $ iqError (Just iqID) (Just from) "cancel" "feature-not-implemented" Nothing)
 	| Just sid <- sessionIDFromText =<< attributeText (s"sessionid") payload =
-		lookupAndStepSession setRouteJid sessions sid iqID from payload
+		(fmap Just) <$> lookupAndStepSession setRouteJid sessions sid iqID from payload
 	| otherwise = do
 		(sid, session) <- newSession
 		now <- getCurrentTime
 		existingRoute <- getRouteJid from
-		return (Map.insert sid (session, now) sessions, stage1 existingRoute from iqID sid)
+		return (Map.insert sid (session, now) sessions, Just $ stage1 existingRoute from iqID sid)
 	where
 	payload
 		| Just p <- realPayload,
@@ -62,7 +65,7 @@ processOneIQ getRouteJid setRouteJid sessions iq@(XMPP.IQ { XMPP.iqID = Just iqI
 		| otherwise = fromMaybe (Element (s"no-payload") [] []) realPayload
 processOneIQ _ _ sessions iq@(XMPP.IQ { XMPP.iqID = iqID, XMPP.iqFrom = from }) = do
 	log "ConfigureDirectMessageRoute.processOneIQ BAD INPUT" iq
-	return (sessions, iqError iqID from "cancel" "feature-not-implemented" Nothing)
+	return (sessions, Just $ iqError iqID from "cancel" "feature-not-implemented" Nothing)
 
 lookupAndStepSession :: (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> Session' (IO (Map SessionID (Session, UTCTime), XMPP.IQ))
 lookupAndStepSession setRouteJid sessions sid iqID from payload
