@@ -744,8 +744,8 @@ componentStanza (ComponentContext { db, smsJid = (Just smsJid), toRoomPresences,
 	})) | typ `elem` [PresenceAvailable, PresenceUnavailable] = do
 		existingRoom <- tcGetJID db to "joined"
 		handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads (typ == PresenceAvailable)
-componentStanza _ (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
-	return [
+componentStanza (ComponentContext { maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+	return $ [
 			mkStanzaRec $ (emptyPresence PresenceSubscribed) {
 				presenceTo = Just from,
 				presenceFrom = Just to
@@ -755,7 +755,11 @@ componentStanza _ (ReceivedPresence (Presence { presenceType = PresenceSubscribe
 				presenceFrom = Just to
 			},
 			mkStanzaRec $ cheogramAvailable to from
-		]
+		] ++ map (mkStanzaRec . (\payload -> ((emptyMessage MessageHeadline) {
+			messageTo = Just from,
+			messageFrom = Just to,
+			messagePayloads = [payload]
+		})) . avatarMetadata) (justZ maybeAvatar)
 componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid }) (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just _ } })) = do
 	stanzas <- routeDiscoOrReply db componentJid from smsJid "CHEOGRAM%query-then-send-presence" Nothing $ telAvailable to from []
 	return $ [
@@ -781,8 +785,14 @@ componentStanza (ComponentContext { smsJid = Nothing }) (ReceivedPresence (Prese
 			},
 			mkStanzaRec $ telAvailable to from []
 		]
-componentStanza _ (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
-	return [mkStanzaRec $ cheogramAvailable to from]
+componentStanza (ComponentContext { maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+	return $
+		[mkStanzaRec $ cheogramAvailable to from] ++
+		map (mkStanzaRec . (\payload -> (emptyMessage (MessageHeadline)) {
+			messageTo = Just from,
+			messageFrom = Just to,
+			messagePayloads = [payload]
+		}) . avatarMetadata) (justZ maybeAvatar)
 componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid }) (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just _ } })) = do
 	routeDiscoOrReply db componentJid from smsJid "CHEOGRAM%query-then-send-presence" Nothing $ telAvailable to from []
 componentStanza _ (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just node } }))
@@ -1976,6 +1986,24 @@ mkAvatar path = do
 		(T.pack $ showDigest $ sha1 png)
 		(LZ.length png)
 		(decodeUtf8 $ Base64.encode $ LZ.toStrict png)
+
+avatarMetadata :: Avatar -> XML.Element
+avatarMetadata (Avatar hash size _) =
+	XML.Element (s"{http://jabber.org/protocol/pubsub#event}event") [] [
+		XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/pubsub#event}items")
+		[(s"node", [XML.ContentText $ s"urn:xmpp:avatar:metadata"])] [
+			XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/pubsub#event}item")
+			[(s"id", [XML.ContentText hash])] [
+				XML.NodeElement $ XML.Element (s"{urn:xmpp:avatar:metadata}metadata") [] [
+					XML.NodeElement $ XML.Element (s"{urn:xmpp:avatar:metadata}info") [
+						(s"id", [XML.ContentText hash]),
+						(s"bytes", [XML.ContentText $ tshow size]),
+						(s"type", [XML.ContentText $ s"image/png"])
+					] []
+				]
+			]
+		]
+	]
 
 main :: IO ()
 main = do
