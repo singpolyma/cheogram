@@ -884,7 +884,7 @@ componentStanza _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNo
 	| iqType iq `elem` [IQGet, IQSet],
 	  [_] <- isNamed (fromString "{jabber:iq:register}query") p = do
 		return [mkStanzaRec $ iqNotImplemented iq]
-componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
+componentStanza (ComponentContext { db, componentJid, maybeAvatar }) (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [q] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		return [mkStanzaRec $ (emptyIQ IQResult) {
@@ -926,11 +926,15 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ (IQ { iqType
 			iqTo = Just from,
 			iqFrom = Just to,
 			iqID = id,
-			iqPayload = Just $ Element (s"{vcard-temp}vCard") []
+			iqPayload = Just $ Element (s"{vcard-temp}vCard") [] $
 				[
 					NodeElement $ Element (s"{vcard-temp}URL") [] [NodeContent $ ContentText $ s"https://cheogram.com"],
 					NodeElement $ Element (s"{vcard-temp}DESC") [] [NodeContent $ ContentText $ s"Cheogram provides stable JIDs for PSTN identifiers, with routing through many possible backends.\n\n© Stephen Paul Weber, licensed under AGPLv3+.\n\nSource code for this gateway is available from the listed homepage.\n\nPart of the Soprani.ca project."]
-				]
+				] ++ map (\(Avatar _ _ b64) -> NodeElement $ Element (s"{vcard-temp}PHOTO") [] [
+						NodeElement $ mkElement (s"{vcard-temp}TYPE") (s"image/png"),
+						NodeElement $ mkElement (s"{vcard-temp}BINVAL") b64
+					]
+				) (justZ maybeAvatar)
 		}]
 	where
 	extra = T.unpack $ escapeJid $ T.pack $ show (id, fromMaybe mempty resourceFrom)
