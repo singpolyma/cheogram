@@ -15,7 +15,7 @@ import Network (PortID(PortNumber))
 import Network.URI (parseURI, uriPath, escapeURIString)
 import System.Random (Random(randomR), getStdRandom)
 import System.Random.Shuffle (shuffleM)
-import Data.Digest.Pure.SHA (sha1, bytestringDigest)
+import Data.Digest.Pure.SHA (sha1, bytestringDigest, showDigest)
 import Network.StatsD (openStatsD)
 import qualified Network.StatsD as StatsD
 
@@ -685,7 +685,8 @@ data ComponentContext = ComponentContext {
 	toJoinPartDebouncer :: TChan JoinPartDebounce,
 	processDirectMessageRouteConfig :: IQ -> IO (Maybe IQ),
 	componentJid :: JID,
-	sendIQ :: IQ -> UIO (STM (Maybe IQ))
+	sendIQ :: IQ -> UIO (STM (Maybe IQ)),
+	maybeAvatar :: Maybe Avatar
 }
 
 componentStanza :: ComponentContext -> ReceivedStanza -> IO [StanzaRec]
@@ -743,8 +744,8 @@ componentStanza (ComponentContext { db, smsJid = (Just smsJid), toRoomPresences,
 	})) | typ `elem` [PresenceAvailable, PresenceUnavailable] = do
 		existingRoom <- tcGetJID db to "joined"
 		handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads (typ == PresenceAvailable)
-componentStanza _ (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
-	return [
+componentStanza (ComponentContext { maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+	return $ [
 			mkStanzaRec $ (emptyPresence PresenceSubscribed) {
 				presenceTo = Just from,
 				presenceFrom = Just to
@@ -754,7 +755,11 @@ componentStanza _ (ReceivedPresence (Presence { presenceType = PresenceSubscribe
 				presenceFrom = Just to
 			},
 			mkStanzaRec $ cheogramAvailable to from
-		]
+		] ++ map (mkStanzaRec . (\payload -> ((emptyMessage MessageHeadline) {
+			messageTo = Just from,
+			messageFrom = Just to,
+			messagePayloads = [payload]
+		})) . avatarMetadata) (justZ maybeAvatar)
 componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid }) (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just _ } })) = do
 	stanzas <- routeDiscoOrReply db componentJid from smsJid "CHEOGRAM%query-then-send-presence" Nothing $ telAvailable to from []
 	return $ [
@@ -780,13 +785,38 @@ componentStanza (ComponentContext { smsJid = Nothing }) (ReceivedPresence (Prese
 			},
 			mkStanzaRec $ telAvailable to from []
 		]
-componentStanza _ (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
-	return [mkStanzaRec $ cheogramAvailable to from]
+componentStanza (ComponentContext { maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+	return $
+		[mkStanzaRec $ cheogramAvailable to from] ++
+		map (mkStanzaRec . (\payload -> (emptyMessage (MessageHeadline)) {
+			messageTo = Just from,
+			messageFrom = Just to,
+			messagePayloads = [payload]
+		}) . avatarMetadata) (justZ maybeAvatar)
 componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid }) (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just _ } })) = do
 	routeDiscoOrReply db componentJid from smsJid "CHEOGRAM%query-then-send-presence" Nothing $ telAvailable to from []
 componentStanza _ (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Just node } }))
 	| Just multipleTo <- mapM localpartToURI (T.split (==',') $ strNode node) = do
 	return $ [mkStanzaRec $ telAvailable to from []]
+componentStanza (ComponentContext { maybeAvatar = Just (Avatar hash _ b64) }) (ReceivedIQ (iq@IQ { iqType = IQGet, iqTo = Just to@JID { jidNode = Nothing }, iqFrom = Just from, iqID = Just id, iqPayload = Just p }))
+	| [items] <- isNamed (s"{http://jabber.org/protocol/pubsub}items") =<<
+		elementChildren =<<
+		isNamed (s"{http://jabber.org/protocol/pubsub}pubsub") p,
+	  attributeText (s"node") items == Just (s"urn:xmpp:avatar:data"),
+	  [item] <- isNamed (s"{http://jabber.org/protocol/pubsub}item") =<<
+		elementChildren items,
+	  attributeText (s"id") item == Just hash =
+		return [mkStanzaRec $ iqReply (Just $
+			XML.Element (s"{http://jabber.org/protocol/pubsub}pubsub") [] [
+				XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/pubsub}items")
+				[(s"node", [XML.ContentText $ s"urn:xmpp:avatar:data"])] [
+					XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/pubsub}item")
+					[(s"id", [XML.ContentText hash])] [
+						XML.NodeElement $ mkElement (s"{urn:xmpp:avatar:data}data") b64
+					]
+				]
+			]
+		) iq]
 componentStanza (ComponentContext { registrationJids, processDirectMessageRouteConfig, componentJid }) (ReceivedIQ (IQ { iqType = IQSet, iqTo = Just to, iqFrom = Just from, iqID = Just id, iqPayload = Just p }))
 	| jidNode to == Nothing,
 	  [iqEl] <- isNamed (s"{jabber:client}iq") =<< elementChildren =<< isNamed (s"{urn:xmpp:forward:0}forwarded") p,
@@ -854,7 +884,7 @@ componentStanza _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNo
 	| iqType iq `elem` [IQGet, IQSet],
 	  [_] <- isNamed (fromString "{jabber:iq:register}query") p = do
 		return [mkStanzaRec $ iqNotImplemented iq]
-componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
+componentStanza (ComponentContext { db, componentJid, maybeAvatar }) (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [q] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		return [mkStanzaRec $ (emptyIQ IQResult) {
@@ -896,11 +926,15 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ (IQ { iqType
 			iqTo = Just from,
 			iqFrom = Just to,
 			iqID = id,
-			iqPayload = Just $ Element (s"{vcard-temp}vCard") []
+			iqPayload = Just $ Element (s"{vcard-temp}vCard") [] $
 				[
 					NodeElement $ Element (s"{vcard-temp}URL") [] [NodeContent $ ContentText $ s"https://cheogram.com"],
 					NodeElement $ Element (s"{vcard-temp}DESC") [] [NodeContent $ ContentText $ s"Cheogram provides stable JIDs for PSTN identifiers, with routing through many possible backends.\n\n© Stephen Paul Weber, licensed under AGPLv3+.\n\nSource code for this gateway is available from the listed homepage.\n\nPart of the Soprani.ca project."]
-				]
+				] ++ map (\(Avatar _ _ b64) -> NodeElement $ Element (s"{vcard-temp}PHOTO") [] [
+						NodeElement $ mkElement (s"{vcard-temp}TYPE") (s"image/png"),
+						NodeElement $ mkElement (s"{vcard-temp}BINVAL") b64
+					]
+				) (justZ maybeAvatar)
 		}]
 	where
 	extra = T.unpack $ escapeJid $ T.pack $ show (id, fromMaybe mempty resourceFrom)
@@ -1167,7 +1201,7 @@ cacheOOB pushStatsd jingleStore jingleStoreURL m@(XMPP.Message { XMPP.messagePay
 	(body, noOobsNoBody) = partition (\el -> XML.elementName el == bodyName) noOobs
 	(oobs, noOobs) = partition (\el -> XML.elementName el == oobName) payloads
 
-component db redis pushStatsd backendHost did cacheOOB sendIQ iqReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
+component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
 	sendThread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 
@@ -1341,7 +1375,7 @@ component db redis pushStatsd backendHost did cacheOOB sendIQ iqReceiver adhocBo
 				  (nameNamespace $ elementName p) `elem` [Just (s"urn:xmpp:jingle:1"), Just (s"http://jabber.org/protocol/ibb")] -> do
 					jingleHandler iq
 				| otherwise -> liftIO $
-					mapM_ sendToComponent =<< componentStanza (ComponentContext db backendTo registrationJids adhocBotMessage cacheOOB toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid sendIQ) stanza
+					mapM_ sendToComponent =<< componentStanza (ComponentContext db backendTo registrationJids adhocBotMessage cacheOOB toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid sendIQ maybeAvatar) stanza
 	where
 	mapToComponent = mapToBackend (formatJID componentJid)
 	sendToComponent = atomically . writeTChan toComponent
@@ -1947,6 +1981,34 @@ openTokyoCabinet pth = TC.runTCM $ do
 	True <- TC.open db pth [TC.OREADER, TC.OWRITER, TC.OCREAT]
 	return db
 
+data Avatar = Avatar Text Int64 Text
+
+mkAvatar :: FilePath -> IO Avatar
+mkAvatar path = do
+	png <- LZ.readFile path
+	return $! Avatar
+		(T.pack $ showDigest $ sha1 png)
+		(LZ.length png)
+		(decodeUtf8 $ Base64.encode $ LZ.toStrict png)
+
+avatarMetadata :: Avatar -> XML.Element
+avatarMetadata (Avatar hash size _) =
+	XML.Element (s"{http://jabber.org/protocol/pubsub#event}event") [] [
+		XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/pubsub#event}items")
+		[(s"node", [XML.ContentText $ s"urn:xmpp:avatar:metadata"])] [
+			XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/pubsub#event}item")
+			[(s"id", [XML.ContentText hash])] [
+				XML.NodeElement $ XML.Element (s"{urn:xmpp:avatar:metadata}metadata") [] [
+					XML.NodeElement $ XML.Element (s"{urn:xmpp:avatar:metadata}info") [
+						(s"id", [XML.ContentText hash]),
+						(s"bytes", [XML.ContentText $ tshow size]),
+						(s"type", [XML.ContentText $ s"image/png"])
+					] []
+				]
+			]
+		]
+	]
+
 main :: IO ()
 main = do
 	hSetBuffering stdout LineBuffering
@@ -1962,7 +2024,7 @@ main = do
 				mapM_ putStanza =<< registerToGateway componentJid gatewayJid (fromString did) (fromString password)
 				liftIO $ threadDelay 1000000
 		[config] -> do
-			(Config.Config componentJid (Config.ServerConfig host port) secret backendHost rawdid registrationJid conferences s5bListenOn (Config.ServerConfig s5bhost s5bport) jingleStore jingleStoreURL redisConnectInfo (Config.ServerConfig statsdHost statsdPort)) <- Dhall.input Dhall.auto (fromString config)
+			(Config.Config componentJid (Config.ServerConfig host port) secret backendHost rawdid registrationJid conferences s5bListenOn (Config.ServerConfig s5bhost s5bport) jingleStore jingleStoreURL redisConnectInfo (Config.ServerConfig statsdHost statsdPort) maybeAvatarPath) <- Dhall.input Dhall.auto (fromString config)
 			log "" "Starting..."
 			let Just did = normalizeTel rawdid
 			db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
@@ -2081,9 +2143,10 @@ main = do
 				)
 
 			let pushStatsd = void . UIO.fromIO . StatsD.push statsd
+			maybeAvatar <- mapM mkAvatar maybeAvatarPath
 
 			log "" "runComponent STARTING"
 
 			log "runComponent ENDED" =<< runComponent (Server componentJid host (PortNumber port)) secret
-				(component db redis (UIO.lift . pushStatsd) backendHost did (cacheOOB (UIO.lift . pushStatsd) jingleStore jingleStoreURL) sendIQ iqReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+				(component db redis (UIO.lift . pushStatsd) backendHost did maybeAvatar (cacheOOB (UIO.lift . pushStatsd) jingleStore jingleStoreURL) sendIQ iqReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"

@@ -33,7 +33,8 @@ data Config = Config {
 	jingleStore :: FilePath,
 	jingleStoreURL :: Text,
 	redis :: Redis.ConnectInfo,
-	statsd :: ServerConfig
+	statsd :: ServerConfig,
+	avatar :: Maybe FilePath
 } deriving (Dhall.Generic, Dhall.FromDhall, Show)
 
 instance Dhall.FromDhall XMPP.JID where
