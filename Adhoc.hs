@@ -224,39 +224,30 @@ adhocBotAnswerListSingle sendText getMessage field = do
 
 adhocBotAnswerForm :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m Element
 adhocBotAnswerForm sendText getMessage form = do
-	fields <- forM (elementChildren form) $ \field -> do
-		flip HT.select [
-			( elementName field == s"{jabber:x:data}instructions",
+	fields <- forM (filter (uncurry (||) . (isField &&& isInstructions)) $ elementChildren form) $ \field ->
+		HT.select (
+			-- The spec says a field type we don't understand should be treated as text-single
+			log "ADHOC BOT UNKNOWN FIELD" field >>
+			adhocBotAnswerTextSingle sendText getMessage field
+		) [
+			(isInstructions field,
 				sendText (mconcat $ elementText field) >> return []),
-			( elementName field == s"{jabber:x:data}field" &&
-			  attributeText (s"type") field == Just (s"list-single"),
+			(attributeText (s"type") field == Just (s"list-single"),
 				adhocBotAnswerListSingle sendText getMessage field),
-			( elementName field == s"{jabber:x:data}field" &&
-			  attributeText (s"type") field == Just (s"list-multi"),
+			(attributeText (s"type") field == Just (s"list-multi"),
 				adhocBotAnswerListMulti sendText getMessage field),
-			( elementName field == s"{jabber:x:data}field" &&
-			  attributeText (s"type") field == Just (s"jid-single"),
+			(attributeText (s"type") field == Just (s"jid-single"),
 				adhocBotAnswerJidSingle sendText getMessage field),
-			( elementName field == s"{jabber:x:data}field" &&
-			  attributeText (s"type") field == Just (s"hidden"),
+			(attributeText (s"type") field == Just (s"hidden"),
 				return [field]),
-			( elementName field == s"{jabber:x:data}field" &&
-			  attributeText (s"type") field == Just (s"fixed"),
+			(attributeText (s"type") field == Just (s"fixed"),
 				adhocBotAnswerFixed sendText getMessage field),
-			( elementName field == s"{jabber:x:data}field" &&
-			  attributeText (s"type") field == Just (s"boolean"),
+			(attributeText (s"type") field == Just (s"boolean"),
 				adhocBotAnswerBoolean sendText getMessage field),
-			( elementName field == s"{jabber:x:data}field" &&
-			  attributeText (s"type") field `elem` [Just (s"text-single"), Nothing],
+			(attributeText (s"type") field `elem` [Just (s"text-single"), Nothing],
 				-- The default if a type isn't specified is text-single
-				adhocBotAnswerTextSingle sendText getMessage field),
-			( elementName field == s"{jabber:x:data}field",
-				-- The spec says a field type we don't understand should be treated as text-single
-				log "ADHOC BOT UNKNOWN FIELD" field >>
-				adhocBotAnswerTextSingle sendText getMessage field
-			)]
-			-- There can be other things in here that aren't fields, and we want to ignore them completely
-			(return [])
+				adhocBotAnswerTextSingle sendText getMessage field)
+		]
 	return $ Element (s"{jabber:x:data}x") [(s"type", [ContentText $ s"submit"])] $ NodeElement <$> mconcat fields
 
 label :: Element -> Maybe Text
@@ -271,6 +262,12 @@ fieldValue = mconcat . (elementText <=< isNamed(s"{jabber:x:data}value") <=< ele
 desc :: Element -> Maybe Text
 desc = mfilter (not . T.null) . Just . mconcat .
 	(elementText <=< isNamed(s"{jabber:x:data}desc") <=< elementChildren)
+
+isField :: Element -> Bool
+isField el = elementName el == s"{jabber:x:data}field"
+
+isInstructions :: Element -> Bool
+isInstructions el = elementName el == s"{jabber:x:data}instructions"
 
 sendHelp :: (UIO.Unexceptional m, TC.TCDB db) =>
 	   db
