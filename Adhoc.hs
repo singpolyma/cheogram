@@ -4,7 +4,7 @@ import Prelude ()
 import BasicPrelude hiding (log)
 import Control.Concurrent (myThreadId, killThread)
 import Control.Concurrent.STM
-import Control.Error (hush)
+import Control.Error (hush, ExceptT, runExceptT, throwE)
 import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Content(ContentText), isNamed, elementText, elementChildren, attributeText)
 
 import Network.Protocol.XMPP (JID(..), parseJID, formatJID, IQ(..), IQType(..), emptyIQ, Message(..))
@@ -18,6 +18,7 @@ import qualified Data.Text as T
 import qualified Data.UUID as UUID ( toString, toText )
 import qualified Data.UUID.V1 as UUID ( nextUUID )
 import qualified Database.TokyoCabinet as TC
+import qualified UnexceptionalIO.Trans ()
 import qualified UnexceptionalIO as UIO
 
 import StanzaRec
@@ -72,6 +73,24 @@ commandList componentJid qid from to extras =
 				) (elementAttributes el)
 			}
 		) extras
+
+withNext :: (UIO.Unexceptional m) =>
+	   m XMPP.Message
+	-> Element
+	-> (ExceptT [Element] m XMPP.Message -> ExceptT [Element] m [Element])
+	-> m [Element]
+withNext getMessage field answerField
+	| isRequired field && T.null (fieldValue field) = do
+		either return return =<< runExceptT (answerField $ lift getMessage)
+	| otherwise =
+		either return return =<< runExceptT (answerField suspension)
+	where
+	suspension = do
+		m <- lift getMessage
+		if getBody (s"jabber:component:accept") m == Just (s"next") then
+			throwE [field]
+		else
+			return m
 
 withCancel :: (UIO.Unexceptional m) => Int -> (Text -> m ()) -> m () -> STM XMPP.Message -> m XMPP.Message
 withCancel sessionLength sendText cancelSession getMessage = do
@@ -225,28 +244,30 @@ adhocBotAnswerListSingle sendText getMessage field = do
 adhocBotAnswerForm :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m Element
 adhocBotAnswerForm sendText getMessage form = do
 	fields <- forM (filter (uncurry (||) . (isField &&& isInstructions)) $ elementChildren form) $ \field ->
+		let sendText' = lift . sendText in
+		withNext getMessage field $ \getMessage' ->
 		HT.select (
 			-- The spec says a field type we don't understand should be treated as text-single
 			log "ADHOC BOT UNKNOWN FIELD" field >>
-			adhocBotAnswerTextSingle sendText getMessage field
+			adhocBotAnswerTextSingle sendText' getMessage' field
 		) [
 			(isInstructions field,
-				sendText (mconcat $ elementText field) >> return []),
+				sendText' (mconcat $ elementText field) >> return []),
 			(attributeText (s"type") field == Just (s"list-single"),
-				adhocBotAnswerListSingle sendText getMessage field),
+				adhocBotAnswerListSingle sendText' getMessage' field),
 			(attributeText (s"type") field == Just (s"list-multi"),
-				adhocBotAnswerListMulti sendText getMessage field),
+				adhocBotAnswerListMulti sendText' getMessage' field),
 			(attributeText (s"type") field == Just (s"jid-single"),
-				adhocBotAnswerJidSingle sendText getMessage field),
+				adhocBotAnswerJidSingle sendText' getMessage' field),
 			(attributeText (s"type") field == Just (s"hidden"),
 				return [field]),
 			(attributeText (s"type") field == Just (s"fixed"),
-				adhocBotAnswerFixed sendText getMessage field),
+				adhocBotAnswerFixed sendText' getMessage' field),
 			(attributeText (s"type") field == Just (s"boolean"),
-				adhocBotAnswerBoolean sendText getMessage field),
+				adhocBotAnswerBoolean sendText' getMessage' field),
 			(attributeText (s"type") field `elem` [Just (s"text-single"), Nothing],
 				-- The default if a type isn't specified is text-single
-				adhocBotAnswerTextSingle sendText getMessage field)
+				adhocBotAnswerTextSingle sendText' getMessage' field)
 		]
 	return $ Element (s"{jabber:x:data}x") [(s"type", [ContentText $ s"submit"])] $ NodeElement <$> mconcat fields
 
@@ -268,6 +289,9 @@ isField el = elementName el == s"{jabber:x:data}field"
 
 isInstructions :: Element -> Bool
 isInstructions el = elementName el == s"{jabber:x:data}instructions"
+
+isRequired :: Element -> Bool
+isRequired = not . null . (isNamed (s"{jabber:x:data}required") <=< elementChildren)
 
 sendHelp :: (UIO.Unexceptional m, TC.TCDB db) =>
 	   db
@@ -302,7 +326,10 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 				iqTo = parseJID =<< attributeText (s"jid") cmd,
 				iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") cmd])] []
 			}
-			sendAndRespondTo (Just $ s"You can return to main menu by saying 'cancel' at any time.") cmdIQ
+			sendAndRespondTo (Just $ intercalate (s"\n") [
+					s"You can leave something at the current value by saying 'next'.",
+					s"You can return to the main menu by saying 'cancel' at any time."
+				]) cmdIQ
 		Nothing -> sendHelp db componentJid sendMessage sendIQ from routeFrom
 	where
 	sendAndRespondTo intro cmdIQ = do
