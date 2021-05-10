@@ -10,6 +10,7 @@ import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Conte
 import Network.Protocol.XMPP (JID(..), parseJID, formatJID, IQ(..), IQType(..), emptyIQ, Message(..))
 import qualified Network.Protocol.XMPP as XMPP
 
+import qualified Data.CaseInsensitive as CI
 import qualified Control.Concurrent.STM.Delay as Delay
 import qualified Data.Attoparsec.Text as Atto
 import qualified Data.Bool.HT as HT
@@ -319,7 +320,7 @@ sendHelp db componentJid sendMessage sendIQ from routeFrom = do
 adhocBotRunCommand :: (TC.TCDB db, UIO.Unexceptional m) => db -> JID -> JID -> (XMPP.Message -> m ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> JID -> Text -> [Element] -> m ()
 adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body cmdEls = do
 	let (nodes, cmds) = unzip $ mapMaybe (\el -> (,) <$> attributeText (s"node") el <*> pure el) cmdEls
-	case snd <$> find (\(prefixes, _) -> Set.member body prefixes) (zip (uniquePrefix nodes) cmds) of
+	case snd <$> find (\(prefixes, _) -> Set.member (CI.mk body) prefixes) (zip (uniquePrefix nodes) cmds) of
 		Just cmd -> do
 			let cmdIQ = (emptyIQ IQSet) {
 				iqFrom = Just routeFrom,
