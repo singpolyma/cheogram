@@ -112,21 +112,10 @@ withCancel sessionLength sendText cancelSession getMessage = do
 		fromIO_ $ myThreadId >>= killThread
 		return $ error "Unreachable"
 
-queryCommandList' :: JID -> JID -> IQ
-queryCommandList' to from =
-	(emptyIQ IQGet) {
-		iqTo = Just to,
-		iqFrom = Just from,
-		iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#items}query") [
-			(s"{http://jabber.org/protocol/disco#items}node", [ContentText $ s"http://jabber.org/protocol/commands"])
-		] []
-	}
-
 queryCommandList :: JID -> JID -> IO [StanzaRec]
 queryCommandList to from = do
 	uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
 	return [mkStanzaRec $ (queryCommandList' to from) {iqID = uuid}]
-
 
 untilParse :: (UIO.Unexceptional m) => m Message -> m () -> (Text -> Maybe b) -> m b
 untilParse getText onFail parser = do

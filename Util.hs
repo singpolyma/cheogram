@@ -261,3 +261,12 @@ iqReply payload iq = iq {
 	XMPP.iqTo = XMPP.iqFrom iq,
 	XMPP.iqPayload = payload
 }
+
+queryCommandList' :: XMPP.JID -> XMPP.JID -> XMPP.IQ
+queryCommandList' to from = (XMPP.emptyIQ XMPP.IQGet) {
+	XMPP.iqTo = Just to,
+	XMPP.iqFrom = Just from,
+	XMPP.iqPayload = Just $ XML.Element (s"{http://jabber.org/protocol/disco#items}query") [
+		(s"{http://jabber.org/protocol/disco#items}node", [XML.ContentText $ s"http://jabber.org/protocol/commands"])
+	] []
+}

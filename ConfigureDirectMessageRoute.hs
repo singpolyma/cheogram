@@ -16,6 +16,8 @@ import Data.UUID (UUID)
 import qualified Data.UUID as UUID (toString, fromString)
 import qualified Data.UUID.V1 as UUID (nextUUID)
 import qualified Network.Protocol.XMPP as XMPP
+import qualified Data.Bool.HT as HT
+import qualified Data.XML.Types as XML
 
 import Util
 
@@ -193,12 +195,12 @@ stage2 sid iqID from command
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
 	  Just gatewayJid <- XMPP.parseJID =<< getFormField form (s"gateway-jid"),
 	  Just sendFrom <- XMPP.parseJID $ (escapeJid $ bareTxt from) ++ s"@cheogram" =
-		(SessionNext $ stage3 iqID from, (XMPP.emptyIQ XMPP.IQGet) {
-			XMPP.iqID = Just (s"ConfigureDirectMessageRoute2" ++ sessionIDToText sid),
-			XMPP.iqTo = Just gatewayJid,
-			XMPP.iqFrom = Just sendFrom, -- domain gets rewritten by main cheogram program
-			XMPP.iqPayload = Just $ Element (s"{jabber:iq:register}query") [] []
-		})
+		(
+			SessionNext $ commandOrIBR gatewayJid sendFrom,
+			(queryCommandList' gatewayJid sendFrom) {
+				XMPP.iqID = Just (s"ConfigureDirectMessageRoute2" ++ sessionIDToText sid)
+			}
+		)
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
 	  getFormField form (s"gateway-jid") `elem` [Nothing, Just mempty] =
 		(SessionComplete from Nothing, (XMPP.emptyIQ XMPP.IQResult) {
@@ -219,6 +221,79 @@ stage2 sid iqID from command
 				]
 		})
 	| otherwise = (SessionCancel, iqError (Just iqID) (Just from) "modify" "bad-request" (Just "bad-payload"))
+	where
+	commandOrIBR gatewayJid sendFrom _ _ _ command'
+		| (s"jabber:iq:register") `elem` mapMaybe (attributeText (s"node")) (isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren command') =
+			(SessionNext $ proxyAdHocFromGateway iqID from, (XMPP.emptyIQ XMPP.IQSet) {
+				XMPP.iqID = Just (s"ConfigureDirectMessageRoute2" ++ sessionIDToText sid),
+				XMPP.iqTo = Just gatewayJid,
+				XMPP.iqFrom = Just sendFrom,
+				XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ s"jabber:iq:register"])] []
+			})
+		| otherwise =
+			(SessionNext $ stage3 iqID from, (XMPP.emptyIQ XMPP.IQGet) {
+				XMPP.iqID = Just (s"ConfigureDirectMessageRoute2" ++ sessionIDToText sid),
+				XMPP.iqTo = Just gatewayJid,
+				XMPP.iqFrom = Just sendFrom, -- domain gets rewritten by main cheogram program
+				XMPP.iqPayload = Just $ Element (s"{jabber:iq:register}query") [] []
+			})
+
+proxyAdHocFromGateway :: Text -> XMPP.JID -> Session
+proxyAdHocFromGateway prevIqID userJid sid iqID from command
+	| attributeText (s"status") command == Just (s"completed") =
+		if (s"error") `elem` mapMaybe (attributeText (s"type")) (XML.isNamed (s"{http://jabber.org/protocol/commands}note") =<< XML.elementChildren command) then
+			(SessionCancel, proxied)
+		else
+			(
+				SessionComplete userJid (Just from),
+				proxied {
+					XMPP.iqPayload = fmap (\elem ->
+						elem {
+							XML.elementNodes = XML.elementNodes elem ++ [
+								XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/commands}note")
+									[(s"type", [XML.ContentText $ s"info"])]
+									[XML.NodeContent $ XML.ContentText $ s"Registration complete."]
+							]
+						}
+					) (XMPP.iqPayload proxied)
+				}
+			)
+	| otherwise = (SessionNext $ proxyAdHocFromUser iqID otherSID from, proxied)
+	where
+	proxied =
+		(XMPP.emptyIQ XMPP.IQResult) {
+			XMPP.iqID = Just prevIqID,
+			XMPP.iqTo = Just userJid,
+			XMPP.iqPayload = Just $ command {
+				XML.elementAttributes = map (\attr@(name, _) ->
+					HT.select attr [
+						(name == s"node", (name, [ContentText nodeName])),
+						(name == s"sessionid", (name, [ContentText $ sessionIDToText sid]))
+					]
+				) (XML.elementAttributes command)
+			}
+		}
+	otherSID = fromMaybe mempty $ XML.attributeText (s"sessionid") command
+
+proxyAdHocFromUser :: Text -> Text -> XMPP.JID -> Session
+proxyAdHocFromUser prevIqID otherSID gatewayJid _ iqID from command = (
+		SessionNext $ proxyAdHocFromGateway iqID from,
+		(XMPP.emptyIQ XMPP.IQSet) {
+			XMPP.iqID = Just prevIqID,
+			XMPP.iqTo = Just gatewayJid,
+			XMPP.iqFrom = sendFrom,
+			XMPP.iqPayload = Just $ command {
+				XML.elementAttributes = map (\attr@(name, _) ->
+					HT.select attr [
+						(name == s"node", (name, [s"jabber:iq:register"])),
+						(name == s"sessionid", (name, [ContentText otherSID]))
+					]
+				) (XML.elementAttributes command)
+			}
+		}
+	)
+	where
+	sendFrom = XMPP.parseJID $ (escapeJid $ bareTxt from) ++ s"@cheogram"
 
 stage1 :: Maybe XMPP.JID -> XMPP.JID -> Text -> SessionID -> XMPP.IQ
 stage1 existingRoute iqTo iqID sid = (XMPP.emptyIQ XMPP.IQResult) {
