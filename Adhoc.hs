@@ -73,6 +73,8 @@ commandList componentJid qid from to extras =
 						(aname, acontent)
 				) (elementAttributes el)
 			}
+		) $ filter (\el ->
+			attributeText (s"node") el /= Just (s"jabber:iq:register")
 		) extras
 
 withNext :: (UIO.Unexceptional m) =>
