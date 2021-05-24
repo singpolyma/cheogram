@@ -869,7 +869,7 @@ componentStanza (ComponentContext { processDirectMessageRouteConfig, componentJi
 			return [mkStanzaRec $ replyIQ {
 				iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
 			}]
-componentStanza (ComponentContext { db, processDirectMessageRouteConfig, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = Just payload, iqFrom = Just from }))
+componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = Just payload, iqFrom = Just from }))
 	| jidNode to == Nothing,
 	  elementName payload == s"{http://jabber.org/protocol/commands}command",
 	  attributeText (s"node") payload == Just (s"sip-proxy-set"),
