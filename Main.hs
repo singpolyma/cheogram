@@ -880,6 +880,38 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqT
 		else
 			TC.runTCM $ TC.put db (T.unpack (bareTxt from) ++ "\0sip-proxy") $ T.unpack proxy
 		return [mkStanzaRec $ iqReply Nothing iq]
+componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = Just payload, iqFrom = Just from }))
+	| jidNode to == Nothing,
+	  jidNode from == Nothing,
+	  elementName payload == s"{http://jabber.org/protocol/commands}command",
+	  attributeText (s"node") payload == Just (s"push-register"),
+	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren payload,
+	  Just pushRegisterTo <- XMPP.parseJID =<< getFormField form (s"to") =
+		return [
+				mkStanzaRec $ iqReply (
+					Just $ Element (s"{http://jabber.org/protocol/commands}command")
+					[
+						(s"{http://jabber.org/protocol/commands}node", [ContentText $ s"push-register"]),
+						(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ s"all-done"]),
+						(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"completed"])
+					]
+					[
+						NodeElement $ Element (fromString "{jabber:x:data}x") [
+							(fromString "{jabber:x:data}type", [ContentText $ s"result"])
+						] [
+							NodeElement $ Element (fromString "{jabber:x:data}field") [
+								(fromString "{jabber:x:data}type", [ContentText $ s"jid-single"]),
+								(fromString "{jabber:x:data}var", [ContentText $ s"from"])
+							] [
+								NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ escapeJid (bareTxt pushRegisterTo) ++ s"@" ++ formatJID componentJid]
+							]
+						]
+					]
+				) iq,
+				mkStanzaRec $ mkSMS componentJid pushRegisterTo $
+					s"To start registration with " ++ XMPP.formatJID from ++ s" reply with: register " ++ XMPP.formatJID from ++
+					s"\n(If you do not wish to start this registration, simply ignore this message.)"
+			]
 componentStanza _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
 	| iqType iq `elem` [IQGet, IQSet],
 	  [_] <- isNamed (fromString "{jabber:iq:register}query") p = do
@@ -1283,18 +1315,17 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 				| typ `elem` [IQResult, IQError],
 				  (strResource <$> jidResource to) `elem` map Just [s"adhocbot", s"IQMANAGER"] ->
 					iqReceiver iq
-			(Just from, Just to, _, _, _)
+			(Just from, Just to, _, _, ReceivedMessage (Message { messageType = MessageError }))
 				| strDomain (jidDomain from) == backendHost,
 				  to == componentJid ->
-					liftIO $ case stanza of
-						(ReceivedMessage m@(Message { messageType = MessageError })) ->
-							log "backend error" stanza
-						(ReceivedMessage m)
-							| Just txt <- getBody "jabber:component:accept" m,
-							  Just cheoJid <- mapToComponent from,
-							  fmap strNode (jidNode from) /= Just did ->
-								mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt
-						_ -> log "backend no match" stanza
+					log "backend error" stanza
+			(Just from, Just to, _, _, ReceivedMessage m)
+				| strDomain (jidDomain from) == backendHost,
+				  to == componentJid,
+				  Just txt <- getBody "jabber:component:accept" m,
+				  Just cheoJid <- mapToComponent from,
+				  fmap strNode (jidNode from) /= Just did ->
+					liftIO (mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt)
 			(Just from, Just to, Nothing, Just localpart, ReceivedMessage m)
 				| Just txt <- getBody "jabber:component:accept" m,
 				  (T.length txt == 144 || T.length txt == 145) && (s"CHEOGRAM") `T.isPrefixOf` txt -> liftIO $ do -- the length of our token messages
