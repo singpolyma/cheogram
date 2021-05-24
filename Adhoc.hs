@@ -330,8 +330,9 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 			Just resultIQ
 				| IQResult == iqType resultIQ,
 				  Just payload <- iqPayload resultIQ,
-				  [note] <- isNamed (s"{http://jabber.org/protocol/commands}note") =<< elementChildren payload ->
-					sendMessage $ mkSMS componentJid from $ mconcat $ elementText note
+				  notes@(_:_) <- isNamed (s"{http://jabber.org/protocol/commands}note") =<< elementChildren payload ->
+					forM_ notes $
+						sendMessage . mkSMS componentJid from . mconcat . elementText
 				| IQResult == iqType resultIQ,
 				  Just payload <- iqPayload resultIQ,
 				  Just sessionid <- attributeText (s"sessionid") payload,
