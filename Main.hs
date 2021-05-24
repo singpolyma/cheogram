@@ -2058,7 +2058,7 @@ main = do
 					fromMaybe userJid $ parseJID (unescapeJid (strNode node) ++ if T.null resource then mempty else s"/" ++ resource)
 				| otherwise = userJid
 
-			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main
+			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main (XMPP.jidDomain componentJid)
 				(\userJid ->
 					let userJid' = maybeUnescape userJid in
 					(parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0direct-message-route"))
