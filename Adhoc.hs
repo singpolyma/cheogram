@@ -60,7 +60,7 @@ commandList componentJid qid from to extras =
 				NodeElement $ Element (s"{http://jabber.org/protocol/disco#items}item") [
 						(s"jid", [ContentText $ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName]),
 						(s"node", [ContentText $ ConfigureDirectMessageRoute.nodeName]),
-						(s"name", [ContentText $ s"Configure direct message route"])
+						(s"name", [ContentText $ s"Register with backend"])
 				] []
 			] ++ extraItems)
 	}
@@ -325,6 +325,11 @@ isInstructions el = elementName el == s"{jabber:x:data}instructions"
 isRequired :: Element -> Bool
 isRequired = not . null . (isNamed (s"{jabber:x:data}required") <=< elementChildren)
 
+registerShorthand :: Text -> Maybe JID
+registerShorthand body = do
+	gatewayJID <- hush $ Atto.parseOnly (Atto.asciiCI (s"register") *> Atto.many1 Atto.space *> Atto.takeText) body
+	parseJID gatewayJID
+
 sendHelp :: (UIO.Unexceptional m, TC.TCDB db) =>
 	   db
 	-> JID
@@ -351,18 +356,40 @@ sendHelp db componentJid sendMessage sendIQ from routeFrom = do
 adhocBotRunCommand :: (TC.TCDB db, UIO.Unexceptional m) => db -> JID -> JID -> (XMPP.Message -> m ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> JID -> Text -> [Element] -> m ()
 adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body cmdEls = do
 	let (nodes, cmds) = unzip $ mapMaybe (\el -> (,) <$> attributeText (s"node") el <*> pure el) cmdEls
-	case snd <$> find (\(prefixes, _) -> Set.member (CI.mk body) prefixes) (zip (uniquePrefix nodes) cmds) of
-		Just cmd -> do
-			let cmdIQ = (emptyIQ IQSet) {
+
+	case (snd <$> find (\(prefixes, _) -> Set.member (CI.mk body) prefixes) (zip (uniquePrefix nodes) cmds), registerShorthand body) of
+		(_, Just gatewayJID) -> do
+			mResult <- (atomicUIO =<<) $ UIO.lift $ sendIQ $ (emptyIQ IQSet) {
+					iqFrom = Just routeFrom,
+					iqTo = Just componentJid,
+					iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText ConfigureDirectMessageRoute.nodeName])] []
+				}
+			case attributeText (s"sessionid") =<< iqPayload =<< mResult of
+				Just sessionid ->
+					startWithIntro $ (emptyIQ IQSet) {
+						iqFrom = Just routeFrom,
+						iqTo = iqFrom =<< mResult,
+						iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText ConfigureDirectMessageRoute.nodeName]), (s"sessionid", [ContentText sessionid]), (s"action", [ContentText $ s"next"])] [
+							NodeElement $ Element (fromString "{jabber:x:data}x") [
+								(fromString "{jabber:x:data}type", [ContentText $ s"submit"])
+							] [
+								NodeElement $ Element (fromString "{jabber:x:data}field") [
+									(fromString "{jabber:x:data}type", [ContentText $ s"jid-single"]),
+									(fromString "{jabber:x:data}var", [ContentText $ s"gateway-jid"])
+								] [
+									NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ formatJID gatewayJID]
+								]
+							]
+						]
+					}
+				Nothing -> sendHelp db componentJid sendMessage sendIQ from routeFrom
+		(Just cmd, Nothing) ->
+			startWithIntro $ (emptyIQ IQSet) {
 				iqFrom = Just routeFrom,
 				iqTo = parseJID =<< attributeText (s"jid") cmd,
 				iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") cmd])] []
 			}
-			sendAndRespondTo (Just $ intercalate (s"\n") [
-					s"You can leave something at the current value by saying 'next'.",
-					s"You can return to the main menu by saying 'cancel' at any time."
-				]) cmdIQ
-		Nothing -> sendHelp db componentJid sendMessage sendIQ from routeFrom
+		(Nothing, Nothing) -> sendHelp db componentJid sendMessage sendIQ from routeFrom
 	where
 	startWithIntro cmdIQ =
 		sendAndRespondTo (Just $ intercalate (s"\n") [

@@ -367,7 +367,7 @@ sessionIDToText :: SessionID -> Text
 sessionIDToText (SessionID uuid) = fromString $ UUID.toString uuid
 
 nodeName :: Text
-nodeName = s"configure-direct-message-route"
+nodeName = s"register"
 
 iqError :: Maybe Text -> Maybe XMPP.JID -> String -> String -> Maybe String -> XMPP.IQ
 iqError iqID to typ xmpp command = (XMPP.emptyIQ XMPP.IQError) {
