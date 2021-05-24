@@ -1542,7 +1542,6 @@ parseCommand txt room nick componentJid
 	| otherwise = Just $ Send txt
 	where
 	maybeStripProxy jid
-		| Just _ <- normalizeTel =<< strNode <$> jidNode jid = jid
 		| jidDomain jid == jidDomain (componentJid) = fromMaybe jid $ proxiedJidToReal jid
 		| otherwise = jid
 	citxt = CI.mk txt
