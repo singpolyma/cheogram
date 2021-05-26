@@ -858,6 +858,7 @@ componentStanza (ComponentContext { processDirectMessageRouteConfig, componentJi
 			let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
 			return [mkStanzaRec $ replyIQ {
 				iqTo = if fmap bareTxt (iqTo replyIQ) == Just onBehalf then parseJID fwdBy else iqTo replyIQ,
+				iqID = if iqType replyIQ == IQResult then iqID replyIQ else Just $ fromString $ show (fwdBy, onBehalf, iqID replyIQ),
 				iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
 			}]
 componentStanza (ComponentContext { processDirectMessageRouteConfig, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = payload }))
