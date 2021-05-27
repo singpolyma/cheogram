@@ -396,25 +396,26 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 				s"You can leave something at the current value by saying 'next'.",
 				s"You can return to the main menu by saying 'cancel' at any time."
 			]) cmdIQ
-	threadedMessage sessionid msg = msg { messagePayloads = (Element (s"thread") [] [NodeContent $ ContentText sessionid]) : messagePayloads msg }
+	threadedMessage Nothing msg = msg
+	threadedMessage (Just sessionid) msg = msg { messagePayloads = (Element (s"thread") [] [NodeContent $ ContentText sessionid]) : messagePayloads msg }
 	sendAndRespondTo intro cmdIQ = do
 		mcmdResult <- atomicUIO =<< UIO.lift (sendIQ cmdIQ)
 		case mcmdResult of
 			Just resultIQ
 				| IQResult == iqType resultIQ,
 				  Just payload <- iqPayload resultIQ,
-				  Just sessionid <- attributeText (s"sessionid") payload,
 				  notes@(_:_) <- isNamed (s"{http://jabber.org/protocol/commands}note") =<< elementChildren payload -> do
-					let sendText = sendMessage . threadedMessage sessionid . mkSMS componentJid from
+					let sendText = sendMessage . threadedMessage (attributeText (s"sessionid") payload) . mkSMS componentJid from
 					forM_ notes $
 						sendText . mconcat . elementText
 					when (attributeText (s"status") payload == Just (s"executing")) $ do
 						let actions = mapMaybe (actionFromXMPP . XML.nameLocalName . elementName) $ elementChildren =<< isNamed (s"{http://jabber.org/protocol/commands}actions") =<< elementChildren payload
+						let sessionid = maybe [] (\sessid -> [(s"sessionid", [ContentText sessid])]) $ attributeText (s"sessionid") payload
 						action <- waitForAction actions sendText (atomicUIO getMessage)
 						let cmdIQ' = (emptyIQ IQSet) {
 							iqFrom = Just routeFrom,
 							iqTo = iqFrom resultIQ,
-							iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") payload]), (s"sessionid", [ContentText sessionid]), (s"action", [actionContent action])] []
+							iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") ([(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") payload]), (s"action", [actionContent action])] ++ sessionid) []
 						}
 						sendAndRespondTo Nothing cmdIQ'
 				| IQResult == iqType resultIQ,
@@ -428,7 +429,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 						iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText cmd]), (s"sessionid", [ContentText sessionid]), (s"action", [ContentText $ s"cancel"])] []
 					}
 					let cancel = void . atomicUIO =<< UIO.lift (sendIQ cancelIQ)
-					let sendText = sendMessage . threadedMessage sessionid . mkSMS componentJid from
+					let sendText = sendMessage . threadedMessage (Just sessionid) . mkSMS componentJid from
 					let cancelText = sendText . ((cmd ++ s" ") ++)
 					forM_ intro sendText
 					returnForm <- adhocBotAnswerForm sendText (withCancel sessionLifespan cancelText cancel getMessage) form
