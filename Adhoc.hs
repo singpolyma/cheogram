@@ -91,7 +91,7 @@ withNext getMessage field answerField
 	where
 	suspension = do
 		m <- lift getMessage
-		if getBody (s"jabber:component:accept") m == Just (s"next") then
+		if fmap CI.mk (getBody (s"jabber:component:accept") m) == Just (s"next") then
 			throwE [field]
 		else
 			return m
