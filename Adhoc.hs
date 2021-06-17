@@ -84,7 +84,7 @@ withNext :: (UIO.Unexceptional m) =>
 	-> (ExceptT [Element] m XMPP.Message -> ExceptT [Element] m [Element])
 	-> m [Element]
 withNext getMessage field answerField
-	| isRequired field && T.null (fieldValue field) = do
+	| isRequired field && T.null (mconcat $ fieldValue field) = do
 		either return return =<< runExceptT (answerField $ lift getMessage)
 	| otherwise =
 		either return return =<< runExceptT (answerField suspension)
@@ -133,7 +133,7 @@ formatLabel :: (Text -> Maybe Text) -> Element -> Text
 formatLabel valueFormatter field = lbl ++ value ++ descSuffix
 	where
 	lbl = maybe mempty T.toTitle $ label field
-	value = maybe mempty (\v -> s" [Current value " ++ v ++ s"]") $ valueFormatter <=< mfilter (not . T.null) $ Just $ fieldValue field
+	value = maybe mempty (\v -> s" [Current value " ++ v ++ s"]") $ valueFormatter <=< mfilter (not . T.null) $ Just $ intercalate (s", ") (fieldValue field)
 	descSuffix = maybe mempty (\dsc -> s"\n(" ++ dsc ++ s")") $ desc field
 
 adhocBotAnswerFixed :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
@@ -178,7 +178,7 @@ listOptionText :: (Foldable t) => t Text -> Text -> (Int, Element) -> Text
 listOptionText currentValues currentValueText (n, v) = tshow n ++ s". " ++ optionText v ++ selectedText v
 	where
 	selectedText option
-		| fieldValue option `elem` currentValues = currentValueText
+		| mconcat (fieldValue option) `elem` currentValues = currentValueText
 		| otherwise = mempty
 
 adhocBotAnswerJidSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
@@ -199,13 +199,13 @@ adhocBotAnswerListMulti sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
-			let currentValues = elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren field
+			let currentValues = fieldValue field
 			let optionsText = fmap (listOptionText currentValues (s" [Currently Selected]")) options
 			sendText $ unlines $ [formatLabel (const Nothing) field] ++ optionsText ++ [s"Which numbers?"]
 			values <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly parser)
 			let selectedOptions = fmap snd $ filter (\(x, _) -> x `elem` values) options
 			return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] $ flip fmap selectedOptions $ \option ->
-						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ fieldValue option]
+						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ mconcat $ fieldValue option]
 				]
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 	where
@@ -224,7 +224,7 @@ adhocBotAnswerListSingle sendText getMessage field = do
 			let maybeOption = fmap snd $ find (\(x, _) -> x == value) options
 			case maybeOption of
 				Just option -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
-						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ fieldValue option]
+						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ mconcat $ fieldValue option]
 					]]
 				Nothing -> do
 					sendText $ s"Please pick one of the given options"
@@ -263,6 +263,17 @@ adhocBotAnswerForm sendText getMessage form = do
 				adhocBotAnswerTextSingle sendText' getMessage' field)
 		]
 	return $ Element (s"{jabber:x:data}x") [(s"type", [ContentText $ s"submit"])] $ NodeElement <$> mconcat fields
+
+renderResultForm :: Element -> Text
+renderResultForm form =
+	intercalate (s"\n") $ flip map (filter (uncurry (||) . (isField &&& isInstructions)) $ elementChildren form) $ \field ->
+		HT.select (
+			formatLabel (const Nothing) field ++ s": " ++
+			unlines (fieldValue field)
+		) [
+			(isInstructions field,
+				mconcat $ elementText field)
+		]
 
 data Action = ActionNext | ActionPrev | ActionCancel | ActionComplete
 
@@ -307,10 +318,11 @@ label :: Element -> Maybe Text
 label = attributeText (s"label")
 
 optionText :: Element -> Text
-optionText element = fromMaybe (fieldValue element) (label element)
+optionText element = fromMaybe (mconcat $ fieldValue element) (label element)
 
-fieldValue :: Element -> Text
-fieldValue = mconcat . (elementText <=< isNamed(s"{jabber:x:data}value") <=< elementChildren)
+fieldValue :: Element -> [Text]
+fieldValue = fmap (mconcat . elementText) .
+	isNamed (s"{jabber:x:data}value") <=< elementChildren
 
 desc :: Element -> Maybe Text
 desc = mfilter (not . T.null) . Just . mconcat .
@@ -418,6 +430,12 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 							iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") ([(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") payload]), (s"action", [actionContent action])] ++ sessionid) []
 						}
 						sendAndRespondTo Nothing cmdIQ'
+				| IQResult == iqType resultIQ,
+				  Just payload <- iqPayload resultIQ,
+				  [form] <- isNamed (s"{jabber:x:data}x") =<< elementChildren payload,
+				  attributeText (s"type") form == Just (s"result") -> do
+					let sendText = sendMessage . threadedMessage (attributeText (s"sessionid") payload) . mkSMS componentJid from
+					sendText $ renderResultForm form
 				| IQResult == iqType resultIQ,
 				  Just payload <- iqPayload resultIQ,
 				  Just sessionid <- attributeText (s"sessionid") payload,
