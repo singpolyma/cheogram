@@ -264,16 +264,43 @@ adhocBotAnswerForm sendText getMessage form = do
 		]
 	return $ Element (s"{jabber:x:data}x") [(s"type", [ContentText $ s"submit"])] $ NodeElement <$> mconcat fields
 
+formatReported :: Element -> (Text, [Text])
+formatReported =
+	first (intercalate (s"\t")) .  unzip .
+	map (\field ->
+		(
+			formatLabel (const Nothing) field,
+			fromMaybe mempty (attributeText (s"var") field)
+		)
+	) . filter isField . elementChildren
+
+formatItem :: [Text] -> Element -> Text
+formatItem reportedVars item = intercalate (s"\t") $ map (\var ->
+		intercalate (s", ") $ findFieldValue var
+	) reportedVars
+	where
+	findFieldValue var = maybe [] fieldValue $ find (\field ->
+			attributeText (s"var") field == Just var
+		) fields
+	fields = filter isField $ elementChildren item
+
 renderResultForm :: Element -> Text
 renderResultForm form =
-	intercalate (s"\n") $ flip map (filter (uncurry (||) . (isField &&& isInstructions)) $ elementChildren form) $ \field ->
-		HT.select (
-			formatLabel (const Nothing) field ++ s": " ++
-			unlines (fieldValue field)
-		) [
-			(isInstructions field,
-				mconcat $ elementText field)
+	intercalate (s"\n") $ catMaybes $ snd $
+	forAccumL [] (elementChildren form) $ \reportedVars el ->
+		HT.select (reportedVars, Nothing) $ map (second $ second Just) [
+			(isInstructions el, (reportedVars,
+				mconcat $ elementText el)),
+			(isField el, (reportedVars,
+				formatLabel (const Nothing) el ++ s": " ++
+				unlines (fieldValue el))),
+			(isReported el,
+				swap $ formatReported el),
+			(isItem el, (reportedVars,
+				formatItem reportedVars el))
 		]
+	where
+	forAccumL z xs f = mapAccumL f z xs
 
 data Action = ActionNext | ActionPrev | ActionCancel | ActionComplete
 
@@ -333,6 +360,12 @@ isField el = elementName el == s"{jabber:x:data}field"
 
 isInstructions :: Element -> Bool
 isInstructions el = elementName el == s"{jabber:x:data}instructions"
+
+isReported :: Element -> Bool
+isReported el = elementName el == s"{jabber:x:data}reported"
+
+isItem :: Element -> Bool
+isItem el = elementName el == s"{jabber:x:data}item"
 
 isRequired :: Element -> Bool
 isRequired = not . null . (isNamed (s"{jabber:x:data}required") <=< elementChildren)
