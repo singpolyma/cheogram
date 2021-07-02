@@ -139,6 +139,7 @@ formatLabel valueFormatter field = lbl ++ value ++ descSuffix
 adhocBotAnswerFixed :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerFixed sendText _getMessage field = do
 	let values = fmap (mconcat . elementText) $ isNamed (s"{jabber:x:data}value") =<< elementChildren field
+	sendText $ formatLabel (const Nothing) field
 	sendText $ unlines values
 	return []
 
