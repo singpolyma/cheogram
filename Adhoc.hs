@@ -105,7 +105,7 @@ withCancel sessionLength sendText cancelSession getMessage = do
 		Just <$> getMessage
 	case maybeMsg of
 		Just msg
-			| getBody (s"jabber:component:accept") msg == Just (s"cancel") -> cancel $ s"cancelled"
+			| (CI.mk <$> getBody (s"jabber:component:accept") msg) == Just (s"cancel") -> cancel $ s"cancelled"
 		Just msg -> return msg
 		Nothing -> cancel $ s"expired"
 	where
