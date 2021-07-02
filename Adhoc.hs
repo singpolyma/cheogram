@@ -4,7 +4,7 @@ import Prelude ()
 import BasicPrelude hiding (log)
 import Control.Concurrent (myThreadId, killThread)
 import Control.Concurrent.STM
-import Control.Error (hush, ExceptT, runExceptT, throwE)
+import Control.Error (hush, ExceptT, runExceptT, throwE, justZ)
 import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Content(ContentText), isNamed, elementText, elementChildren, attributeText)
 import qualified Data.XML.Types as XML
 
@@ -494,6 +494,9 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 						iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") payload]), (s"sessionid", [ContentText sessionid]), (s"action", [ContentText defaultAction])] [NodeElement returnForm]
 					}
 					sendAndRespondTo Nothing cmdIQ'
+				| IQResult == iqType resultIQ,
+				  [cmd] <- isNamed (s"{http://jabber.org/protocol/commands}command") =<< (justZ $ iqPayload resultIQ),
+				  attributeText (s"status") cmd == Just (s"completed") -> return ()
 				| otherwise -> sendMessage $ mkSMS componentJid from (s"Command error")
 			Nothing -> sendMessage $ mkSMS componentJid from (s"Command timed out")
 
