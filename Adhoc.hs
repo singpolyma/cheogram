@@ -132,7 +132,7 @@ untilParse getText onFail parser = do
 formatLabel :: (Text -> Maybe Text) -> Element -> Text
 formatLabel valueFormatter field = lbl ++ value ++ descSuffix
 	where
-	lbl = maybe mempty T.toTitle $ label field
+	lbl = maybe (fromMaybe mempty $ attributeText (s"var") field) T.toTitle $ label field
 	value = maybe mempty (\v -> s" [Current value " ++ v ++ s"]") $ valueFormatter <=< mfilter (not . T.null) $ Just $ intercalate (s", ") (fieldValue field)
 	descSuffix = maybe mempty (\dsc -> s"\n(" ++ dsc ++ s")") $ desc field
 
