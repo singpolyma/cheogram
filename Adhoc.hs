@@ -38,15 +38,15 @@ addOriginUUID msg = maybe msg (addTag msg) <$> fromIO_ UUID.nextUUID
 	where
 	addTag msg uuid = msg { messagePayloads = Element (s"{urn:xmpp:sid:0}origin-id") [(s"id", [ContentText $ UUID.toText uuid])] [] : messagePayloads msg }
 
-botHelp :: IQ -> Maybe Message
-botHelp (IQ { iqTo = Just to, iqFrom = Just from, iqPayload = Just payload }) =
-	Just $ mkSMS from to $ (s"Help:\n\t") ++ intercalate (s"\n\t") (map (\item ->
+botHelp :: Maybe Text -> IQ -> Maybe Message
+botHelp header (IQ { iqTo = Just to, iqFrom = Just from, iqPayload = Just payload }) =
+	Just $ mkSMS from to $ maybe mempty (++ s"\n") header ++ (s"Help:\n\t") ++ intercalate (s"\n\t") (map (\item ->
 		fromMaybe mempty (attributeText (s"node") item) ++ s": " ++
 		fromMaybe mempty (attributeText (s"name") item)
 	) items)
 	where
 	items = isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren payload
-botHelp _ = Nothing
+botHelp _ _ = Nothing
 
 commandList :: JID -> Maybe Text -> JID -> JID -> [Element] -> IQ
 commandList componentJid qid from to extras =
@@ -378,6 +378,12 @@ registerShorthand body = do
 	gatewayJID <- hush $ Atto.parseOnly (Atto.asciiCI (s"register") *> Atto.many1 Atto.space *> Atto.takeText) body
 	parseJID gatewayJID
 
+getServerInfoForm :: [XML.Element] -> Maybe XML.Element
+getServerInfoForm = find (\el ->
+		attributeText (s"type") el == Just (s"result") &&
+		getFormField el (s"FORM_TYPE") == Just (s"http://jabber.org/network/serverinfo")
+	) . (isNamed (s"{jabber:x:data}x") =<<)
+
 sendHelp :: (UIO.Unexceptional m, TC.TCDB db) =>
 	   db
 	-> JID
@@ -390,14 +396,19 @@ sendHelp db componentJid sendMessage sendIQ from routeFrom = do
 	maybeRoute <- fmap (join . hush) $ UIO.fromIO $ TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
 	case parseJID =<< fmap fromString maybeRoute of
 		Just route -> do
-			mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
-			let helpMessage = botHelp $ commandList componentJid Nothing componentJid from $
-				isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren =<< maybeToList (XMPP.iqPayload =<< mfilter ((== XMPP.IQResult) . XMPP.iqType) mreply)
+			replySTM <- UIO.lift $ sendIQ $ queryCommandList' route routeFrom
+			discoInfoSTM <- UIO.lift $ sendIQ $ queryDiscoWithNode' Nothing route routeFrom
+			(mreply, mDiscoInfo) <- atomicUIO $ (,) <$> replySTM <*> discoInfoSTM
+
+			let helpMessage = botHelp
+				(renderResultForm <$> (getServerInfoForm . elementChildren =<< iqPayload =<< mDiscoInfo)) $
+				commandList componentJid Nothing componentJid from $
+					isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren =<< maybeToList (XMPP.iqPayload =<< mfilter ((== XMPP.IQResult) . XMPP.iqType) mreply)
 			case helpMessage of
 				Just msg -> sendMessage msg
 				Nothing -> log "INVALID HELP MESSAGE" mreply
 		Nothing ->
-			case botHelp $ commandList componentJid Nothing componentJid from [] of
+			case botHelp Nothing $ commandList componentJid Nothing componentJid from [] of
 				Just msg -> sendMessage msg
 				Nothing -> log "INVALID HELP MESSAGE" ()
 

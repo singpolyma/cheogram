@@ -67,11 +67,8 @@ queryDisco to from = (:[]) . mkStanzaRec <$> queryDiscoWithNode Nothing to from
 
 queryDiscoWithNode node to from = do
 	uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
-	return $ (emptyIQ IQGet) {
-		iqTo = Just to,
-		iqFrom = Just from,
-		iqID = uuid,
-		iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query") (map (\node -> (s"{http://jabber.org/protocol/disco#info}node", [ContentText node])) $ maybeToList node) []
+	return $ (queryDiscoWithNode' node to from) {
+		iqID = uuid
 	}
 
 fillFormField var value form = form {

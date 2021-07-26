@@ -270,3 +270,14 @@ queryCommandList' to from = (XMPP.emptyIQ XMPP.IQGet) {
 		(s"{http://jabber.org/protocol/disco#items}node", [XML.ContentText $ s"http://jabber.org/protocol/commands"])
 	] []
 }
+
+queryDiscoWithNode' :: Maybe Text -> XMPP.JID -> XMPP.JID -> XMPP.IQ
+queryDiscoWithNode' node to from =
+	(XMPP.emptyIQ XMPP.IQGet) {
+		XMPP.iqTo = Just to,
+		XMPP.iqFrom = Just from,
+		XMPP.iqPayload = Just $ XML.Element
+			(s"{http://jabber.org/protocol/disco#info}query")
+			(map (\node -> (s"{http://jabber.org/protocol/disco#info}node", [XML.ContentText node])) $ maybeToList node)
+			[]
+	}
