@@ -454,7 +454,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 					let sendText = sendMessage . threadedMessage (attributeText (s"sessionid") payload) . mkSMS componentJid from
 					forM_ notes $
 						sendText . mconcat . elementText
-					when (attributeText (s"status") payload == Just (s"executing")) $ do
+					if (attributeText (s"status") payload == Just (s"executing")) then do
 						let actions = mapMaybe (actionFromXMPP . XML.nameLocalName . elementName) $ elementChildren =<< isNamed (s"{http://jabber.org/protocol/commands}actions") =<< elementChildren payload
 						let sessionid = maybe [] (\sessid -> [(s"sessionid", [ContentText sessid])]) $ attributeText (s"sessionid") payload
 						action <- waitForAction actions sendText (atomicUIO getMessage)
@@ -464,6 +464,11 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 							iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") ([(s"node", [ContentText $ fromMaybe mempty $ attributeText (s"node") payload]), (s"action", [actionContent action])] ++ sessionid) []
 						}
 						sendAndRespondTo Nothing cmdIQ'
+					else when (
+							attributeText (s"node") payload == Just ConfigureDirectMessageRoute.nodeName &&
+							all (\n -> attributeText (s"type") n /= Just (s"error")) notes
+						) $
+							sendHelp db componentJid sendMessage sendIQ from routeFrom
 				| IQResult == iqType resultIQ,
 				  Just payload <- iqPayload resultIQ,
 				  [form] <- isNamed (s"{jabber:x:data}x") =<< elementChildren payload,
