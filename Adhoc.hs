@@ -292,6 +292,8 @@ renderResultForm form =
 		HT.select (reportedVars, Nothing) $ map (second $ second Just) [
 			(isInstructions el, (reportedVars,
 				mconcat $ elementText el)),
+			(isField el && attributeText (s"type") el == Just (s"hidden"), (reportedVars,
+				mempty)),
 			(isField el, (reportedVars,
 				formatLabel (const Nothing) el ++ s": " ++
 				unlines (fieldValue el))),
