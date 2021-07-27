@@ -241,6 +241,7 @@ stage2 componentDomain sid iqID from command
 
 proxyAdHocFromGateway :: Text -> XMPP.JID -> Session
 proxyAdHocFromGateway prevIqID userJid _ sid iqID from command
+	| attributeText (s"status") command == Just (s"canceled") = (SessionCancel, proxied)
 	| attributeText (s"status") command == Just (s"completed") =
 		if (s"error") `elem` mapMaybe (attributeText (s"type")) (XML.isNamed (s"{http://jabber.org/protocol/commands}note") =<< XML.elementChildren command) then
 			(SessionCancel, proxied)
