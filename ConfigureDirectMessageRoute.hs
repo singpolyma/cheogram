@@ -81,8 +81,14 @@ lookupAndStepSession setRouteJid sessions componentDomain sid iqID from payload
 						[
 							(s"{http://jabber.org/protocol/commands}node", [ContentText nodeName]),
 							(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ sessionIDToText sid]),
-							(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"cancelled"])
-						] []
+							(s"{http://jabber.org/protocol/commands}status", [ContentText $ s"canceled"])
+						] [
+							NodeElement $ Element (s"{http://jabber.org/protocol/commands}note") [
+								(s"{http://jabber.org/protocol/commands}type", [ContentText $ s"info"])
+							] [
+								NodeContent $ ContentText $ s"Register cancelled"
+							]
+						]
 				})
 			Just action | action == s"complete" ->
 				return (Map.delete sid sessions, (XMPP.emptyIQ XMPP.IQResult) {
