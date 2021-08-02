@@ -501,6 +501,9 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 					if (attributeText (s"status") payload == Just (s"executing")) then do
 						let actions = mapMaybe (actionFromXMPP . XML.nameLocalName . elementName) $ elementChildren =<< isNamed (s"{http://jabber.org/protocol/commands}actions") =<< elementChildren payload
 						let sessionid = maybe [] (\sessid -> [(s"sessionid", [ContentText sessid])]) $ attributeText (s"sessionid") payload
+						sendText $
+							s"You can say one of: " ++
+							(intercalate (s", ") $ map actionCmd (ActionCancel : actions))
 						action <- waitForAction actions sendText (atomicUIO getMessage)
 						let cmdIQ' = (emptyIQ IQSet) {
 							iqFrom = Just routeFrom,
