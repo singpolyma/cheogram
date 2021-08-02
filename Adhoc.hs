@@ -512,6 +512,7 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 						}
 						sendAndRespondTo Nothing cmdIQ'
 					else when (
+							attributeText (s"status") payload == Just (s"completed") &&
 							attributeText (s"node") payload == Just ConfigureDirectMessageRoute.nodeName &&
 							all (\n -> attributeText (s"type") n /= Just (s"error")) notes
 						) $
