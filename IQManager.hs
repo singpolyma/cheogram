@@ -18,7 +18,7 @@ import Util
 type ResponseMap = Map.Map (Maybe Text) (TMVar XMPP.IQ)
 
 iqSendTimeoutMicroseconds :: Int
-iqSendTimeoutMicroseconds = 5000000
+iqSendTimeoutMicroseconds = 20 * 1000000
 
 iqDefaultID :: (Unexceptional m) => XMPP.IQ -> m XMPP.IQ
 iqDefaultID iq@XMPP.IQ { XMPP.iqID = Just _ } = return iq
