@@ -200,7 +200,8 @@ stage3 stage2iqID stage2from _ sid iqID from query
 stage2 :: Session
 stage2 componentDomain sid iqID from command
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
-	  Just gatewayJid <- XMPP.parseJID =<< getFormField form (s"gateway-jid") =
+	  Just gatewayJid <- XMPP.parseJID =<< getFormField form (s"gateway-jid"),
+	  XMPP.jidNode gatewayJid == Nothing && XMPP.jidResource gatewayJid == Nothing =
 		(
 			SessionNext $ commandOrIBR gatewayJid,
 			(queryCommandList' gatewayJid sendFrom) {
