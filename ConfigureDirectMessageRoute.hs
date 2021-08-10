@@ -313,12 +313,12 @@ stage1 existingRoute iqTo iqID sid = (XMPP.emptyIQ XMPP.IQResult) {
 		] [
 			NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ s"Configure Direct Message Route"],
 			NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
-				NodeContent $ ContentText $ s"Enter the JID of a gateway to use for routing your direct messages over SMS."
+				NodeContent $ ContentText $ s"Enter the gateway to use for routing your direct messages over SMS."
 			],
 			NodeElement $ Element (fromString "{jabber:x:data}field") [
 				(fromString "{jabber:x:data}type", [ContentText $ s"jid-single"]),
 				(fromString "{jabber:x:data}var", [ContentText $ s"gateway-jid"]),
-				(fromString "{jabber:x:data}label", [ContentText $ s"Gateway JID"])
+				(fromString "{jabber:x:data}label", [ContentText $ s"Gateway"])
 			] [
 				NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ maybe mempty XMPP.formatJID existingRoute]
 			]
