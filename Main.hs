@@ -884,7 +884,8 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqT
 	  elementName payload == s"{http://jabber.org/protocol/commands}command",
 	  attributeText (s"node") payload == Just (s"push-register"),
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren payload,
-	  Just pushRegisterTo <- XMPP.parseJID =<< getFormField form (s"to") =
+	  Just pushRegisterTo <- XMPP.parseJID =<< getFormField form (s"to") = do
+		TC.runTCM (TC.put db (T.unpack (bareTxt pushRegisterTo) ++ "\0possible-route") (T.unpack $ XMPP.formatJID from))
 		return [
 				mkStanzaRec $ iqReply (
 					Just $ Element (s"{http://jabber.org/protocol/commands}command")
@@ -2090,10 +2091,15 @@ main = do
 			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main (XMPP.jidDomain componentJid)
 				(\userJid ->
 					let userJid' = maybeUnescape userJid in
+					(parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0possible-route"))
+				)
+				(\userJid ->
+					let userJid' = maybeUnescape userJid in
 					(parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0direct-message-route"))
 				)
 				(\userJid mgatewayJid -> do
 					let userJid' = maybeUnescape userJid
+					TC.runTCM (TC.out db (T.unpack (bareTxt userJid') ++ "\0possible-route"))
 					case mgatewayJid of
 						Just gatewayJid -> do
 							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0direct-message-route"))

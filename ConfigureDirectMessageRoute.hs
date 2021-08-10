@@ -23,12 +23,12 @@ import Util
 
 newtype SessionID = SessionID UUID deriving (Ord, Eq, Show)
 
-main :: XMPP.Domain -> (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> IO (XMPP.IQ -> IO (Maybe XMPP.IQ))
-main componentDomain getRouteJid setRouteJid = do
+main :: XMPP.Domain -> (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> IO (XMPP.IQ -> IO (Maybe XMPP.IQ))
+main componentDomain getPossibleRoute getRouteJid setRouteJid = do
 	stanzas <- newTQueueIO
 	void $ forkIO $ iterateM_ (\sessions -> do
 			(iq, reply) <- atomically (readTQueue stanzas)
-			(sessions', response) <- processOneIQ componentDomain getRouteJid setRouteJid sessions iq
+			(sessions', response) <- processOneIQ componentDomain getPossibleRoute getRouteJid setRouteJid sessions iq
 			atomically $ reply response
 			now <- getCurrentTime
 			return $! Map.filter (\(_, time) -> now `diffUTCTime` time < 600) sessions'
@@ -39,8 +39,8 @@ main componentDomain getRouteJid setRouteJid = do
 			atomically $ readTMVar result
 		)
 
-processOneIQ :: XMPP.Domain -> (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> XMPP.IQ -> IO (Map SessionID (Session, UTCTime), Maybe XMPP.IQ)
-processOneIQ componentDomain getRouteJid setRouteJid sessions iq@(XMPP.IQ { XMPP.iqID = Just iqID, XMPP.iqFrom = Just from, XMPP.iqPayload = realPayload })
+processOneIQ :: XMPP.Domain -> (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> IO (Maybe XMPP.JID)) -> (XMPP.JID -> Maybe XMPP.JID -> IO ()) -> Map SessionID (Session, UTCTime) -> XMPP.IQ -> IO (Map SessionID (Session, UTCTime), Maybe XMPP.IQ)
+processOneIQ componentDomain getPossibleRoute getRouteJid setRouteJid sessions iq@(XMPP.IQ { XMPP.iqID = Just iqID, XMPP.iqFrom = Just from, XMPP.iqPayload = realPayload })
 	| Just sid <- sessionIDFromText . snd =<< T.uncons =<< T.stripPrefix (s"ConfigureDirectMessageRoute") iqID,
           XMPP.iqType iq == XMPP.IQResult || XMPP.iqType iq == XMPP.IQError =
 		(fmap Just) <$> lookupAndStepSession setRouteJid sessions componentDomain sid iqID from payload
@@ -57,7 +57,8 @@ processOneIQ componentDomain getRouteJid setRouteJid sessions iq@(XMPP.IQ { XMPP
 		(sid, session) <- newSession
 		now <- getCurrentTime
 		existingRoute <- getRouteJid from
-		return (Map.insert sid (session, now) sessions, Just $ stage1 existingRoute from iqID sid)
+		possibleRoute <- getPossibleRoute from
+		return (Map.insert sid (session, now) sessions, Just $ stage1 possibleRoute existingRoute from iqID sid)
 	where
 	payload
 		| Just p <- realPayload,
@@ -65,7 +66,7 @@ processOneIQ componentDomain getRouteJid setRouteJid sessions iq@(XMPP.IQ { XMPP
 		| XMPP.iqType iq == XMPP.IQError =
 			let Just p = XMPP.iqPayload $ iqError Nothing Nothing "cancel" "internal-server-error" Nothing in p
 		| otherwise = fromMaybe (Element (s"no-payload") [] []) realPayload
-processOneIQ _ _ _ sessions iq@(XMPP.IQ { XMPP.iqID = iqID, XMPP.iqFrom = from }) = do
+processOneIQ _ _ _ _ sessions iq@(XMPP.IQ { XMPP.iqID = iqID, XMPP.iqFrom = from }) = do
 	log "ConfigureDirectMessageRoute.processOneIQ BAD INPUT" iq
 	return (sessions, Just $ iqError iqID from "cancel" "feature-not-implemented" Nothing)
 
@@ -304,26 +305,29 @@ proxyAdHocFromUser prevIqID otherSID gatewayJid componentDomain _ iqID from comm
 	where
 	sendFrom = sendFromForBackend componentDomain from
 
-stage1 :: Maybe XMPP.JID -> XMPP.JID -> Text -> SessionID -> XMPP.IQ
-stage1 existingRoute iqTo iqID sid = (XMPP.emptyIQ XMPP.IQResult) {
+stage1 :: Maybe XMPP.JID -> Maybe XMPP.JID -> XMPP.JID -> Text -> SessionID -> XMPP.IQ
+stage1 possibleRoute existingRoute iqTo iqID sid = (XMPP.emptyIQ XMPP.IQResult) {
 	XMPP.iqTo = Just iqTo,
 	XMPP.iqID = Just iqID,
 	XMPP.iqPayload = Just $ commandStage sid False $
 		Element (fromString "{jabber:x:data}x") [
 			(fromString "{jabber:x:data}type", [ContentText $ s"form"])
-		] [
-			NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ s"Configure Direct Message Route"],
-			NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
+		] (catMaybes [
+			Just $ NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ s"Configure Direct Message Route"],
+			Just $ NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
 				NodeContent $ ContentText $ s"Enter the gateway to use for routing your direct messages over SMS."
 			],
-			NodeElement $ Element (fromString "{jabber:x:data}field") [
+			flip fmap possibleRoute $ \route -> NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
+				NodeContent $ ContentText $ s"To continue your registration with " ++ XMPP.formatJID route ++ s" please enter " ++ XMPP.formatJID route
+			],
+			Just $ NodeElement $ Element (fromString "{jabber:x:data}field") [
 				(fromString "{jabber:x:data}type", [ContentText $ s"jid-single"]),
 				(fromString "{jabber:x:data}var", [ContentText $ s"gateway-jid"]),
 				(fromString "{jabber:x:data}label", [ContentText $ s"Gateway"])
 			] [
 				NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ maybe mempty XMPP.formatJID existingRoute]
 			]
-		]
+		])
 }
 
 sendFromForBackend :: XMPP.Domain -> XMPP.JID -> XMPP.JID
