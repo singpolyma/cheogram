@@ -483,13 +483,17 @@ handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer compon
 	| fmap bareTxt existingRoom == Just bareMUC && not join = do
 		atomically $ writeTChan toJoinPartDebouncer $ DebouncePart to from
 		return []
-	| join = do
+	| join,
+	  (_:_) <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads = do
 		log "UNKNOWN JOIN" (existingRoom, from, to, payloads, join)
 		atomically $ writeTChan toRoomPresences $ RecordJoin to from (participantJid payloads)
 		return []
-	| otherwise = do
+	| (_:_) <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads = do
 		log "UNKNOWN NOT JOIN" (existingRoom, from, to, payloads, join)
 		atomically $ writeTChan toRoomPresences $ RecordPart to from
+		return []
+	| otherwise =
+		-- This is just presence. It's not marked as MUC or from the room this user is in
 		return []
 	where
 	resourceFrom = fromMaybe mempty (strResource <$> jidResource from)
