@@ -902,8 +902,20 @@ componentStanza (ComponentContext { processDirectMessageRouteConfig, componentJi
 	  fmap strResource (jidResource to) == Just (s"CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName) = do
 		replyIQ <- processDirectMessageRouteConfig iq
 		fmap (fromMaybe []) $ forM replyIQ $ \replyIQ -> do
+			let subscribe = if (attributeText (s"status") =<< iqPayload replyIQ) /= Just (s"completed") then [] else [
+					mkStanzaRec $ (emptyPresence PresenceSubscribe) {
+						presenceTo = iqFrom iq,
+						presenceFrom = Just componentJid,
+						presencePayloads = [
+							Element (s"{jabber:component:accept}status") [] [
+								NodeContent $ ContentText $ s"Add this contact and then you can SMS by sending messages to +1<phone-number>@" ++ formatJID componentJid ++ s" Jabber IDs."
+							]
+						]
+					}
+				]
+
 			let fromLocalpart = maybe mempty (\localpart -> localpart++s"@") (fmap strNode . jidNode =<< iqFrom replyIQ)
-			return [mkStanzaRec $ replyIQ {
+			return $ subscribe ++ [mkStanzaRec $ replyIQ {
 				iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
 			}]
 componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = Just payload, iqFrom = Just from }))
