@@ -140,19 +140,52 @@ code str status =
 	<>
 	hasAttributeText (fromString "code") (== fromString str) status
 
-cheogramAvailable from to =
-	(emptyPresence PresenceAvailable) {
-		presenceTo = Just to,
-		presenceFrom = Just from,
-		presencePayloads = [
-			Element (s"{http://jabber.org/protocol/caps}c") [
-				(s"{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
-				(s"{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:cheogram.com"]),
-				-- gateway/sms//Cheogram<http://jabber.org/protocol/commands<jabber:iq:gateway<jabber:iq:register<urn:xmpp:ping<vcard-temp<
-				(s"{http://jabber.org/protocol/caps}ver", [ContentText $ fromString "JSm4zri7yzqWhI0D9gKJHQd9Gdg="])
+cheogramDiscoInfo db componentJid sendIQ from q = do
+	canVoice <- isJust <$> getSipProxy db componentJid sendIQ from
+	return $ Element (fromString "{http://jabber.org/protocol/disco#info}query")
+		(map (\node -> (s"{http://jabber.org/protocol/disco#info}node", [ContentText node])) $ maybeToList $ nodeAttribute =<< q)
+		(catMaybes [
+			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}identity") [
+				(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
+				(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "sms"]),
+				(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram"])
+				] [],
+			mfilter (const canVoice) $ Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}identity") [
+				(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
+				(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "pstn"]),
+				(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram"])
+			] [],
+			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "http://jabber.org/protocol/commands"])
+			] [],
+			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:gateway"])
+			] [],
+			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:register"])
+			] [],
+			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "urn:xmpp:ping"])
+			] [],
+			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
+				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "vcard-temp"])
 			] []
-		]
-	}
+		])
+
+cheogramAvailable db componentJid sendIQ from to = do
+	disco <- cheogramDiscoInfo db componentJid sendIQ to Nothing
+	let ver = T.decodeUtf8 $ Base64.encode $ discoToCapsHash disco
+	return $ (emptyPresence PresenceAvailable) {
+			presenceTo = Just to,
+			presenceFrom = Just from,
+			presencePayloads = [
+				Element (s"{http://jabber.org/protocol/caps}c") [
+					(s"{http://jabber.org/protocol/caps}hash", [ContentText $ fromString "sha-1"]),
+					(s"{http://jabber.org/protocol/caps}node", [ContentText $ fromString "xmpp:cheogram.com"]),
+					(s"{http://jabber.org/protocol/caps}ver", [ContentText ver])
+				] []
+			]
+		}
 
 telDiscoFeatures = [
 		s"http://jabber.org/protocol/muc",
@@ -745,7 +778,8 @@ componentStanza (ComponentContext { db, smsJid = (Just smsJid), toRoomPresences,
 	})) | typ `elem` [PresenceAvailable, PresenceUnavailable] = do
 		existingRoom <- tcGetJID db to "joined"
 		handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads (typ == PresenceAvailable)
-componentStanza (ComponentContext { maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+componentStanza (ComponentContext { db, componentJid, sendIQ, maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+	avail <- cheogramAvailable db componentJid sendIQ to from
 	return $ [
 			mkStanzaRec $ (emptyPresence PresenceSubscribed) {
 				presenceTo = Just from,
@@ -755,7 +789,7 @@ componentStanza (ComponentContext { maybeAvatar }) (ReceivedPresence (Presence {
 				presenceTo = Just from,
 				presenceFrom = Just to
 			},
-			mkStanzaRec $ cheogramAvailable to from
+			mkStanzaRec avail
 		] ++ map (mkStanzaRec . (\payload -> ((emptyMessage MessageHeadline) {
 			messageTo = Just from,
 			messageFrom = Just to,
@@ -786,9 +820,10 @@ componentStanza (ComponentContext { smsJid = Nothing }) (ReceivedPresence (Prese
 			},
 			mkStanzaRec $ telAvailable to from []
 		]
-componentStanza (ComponentContext { maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+componentStanza (ComponentContext { db, componentJid, sendIQ, maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceProbe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
+	avail <- cheogramAvailable db componentJid sendIQ to from
 	return $
-		[mkStanzaRec $ cheogramAvailable to from] ++
+		[mkStanzaRec avail] ++
 		map (mkStanzaRec . (\payload -> (emptyMessage (MessageHeadline)) {
 			messageTo = Just from,
 			messageFrom = Just to,
@@ -919,38 +954,16 @@ componentStanza _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNo
 	| iqType iq `elem` [IQGet, IQSet],
 	  [_] <- isNamed (fromString "{jabber:iq:register}query") p = do
 		return [mkStanzaRec $ iqNotImplemented iq]
-componentStanza (ComponentContext { db, componentJid, maybeAvatar }) (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
+componentStanza (ComponentContext { db, componentJid, maybeAvatar, sendIQ }) (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [q] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
+		payload <- cheogramDiscoInfo db componentJid sendIQ from (Just q)
 		return [mkStanzaRec $ (emptyIQ IQResult) {
-			iqTo = Just from,
-			iqFrom = Just to,
-			iqID = id,
-			iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/disco#info}query")
-				(map (\node -> (s"{http://jabber.org/protocol/disco#info}node", [ContentText node])) $ maybeToList $ nodeAttribute q)
-				[
-					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}identity") [
-						(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
-						(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "sms"]),
-						(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram"])
-					] [],
-					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "http://jabber.org/protocol/commands"])
-					] [],
-					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:gateway"])
-					] [],
-					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:register"])
-					] [],
-					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "urn:xmpp:ping"])
-					] [],
-					NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-						(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "vcard-temp"])
-					] []
-				]
-		}]
+				iqTo = Just from,
+				iqFrom = Just to,
+				iqID = id,
+				iqPayload = Just payload
+			}]
 	| Nothing <- jidNode to,
 	  [s"http://jabber.org/protocol/commands"] ==
 	    mapMaybe (attributeText (s"node")) (isNamed (fromString "{http://jabber.org/protocol/disco#items}query") p) = do
