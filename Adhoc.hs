@@ -56,13 +56,13 @@ commandList componentJid qid from to extras =
 		iqID = qid,
 		iqPayload = Just $ Element (s"{http://jabber.org/protocol/disco#items}query")
 			[(s"{http://jabber.org/protocol/disco#items}node", [ContentText $ s"http://jabber.org/protocol/commands"])]
-			([
+			(extraItems ++ [
 				NodeElement $ Element (s"{http://jabber.org/protocol/disco#items}item") [
 						(s"jid", [ContentText $ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName]),
 						(s"node", [ContentText $ ConfigureDirectMessageRoute.nodeName]),
 						(s"name", [ContentText $ s"Register with backend"])
 				] []
-			] ++ extraItems)
+			])
 	}
 	where
 	extraItems = map (\el ->
