@@ -217,15 +217,28 @@ adhocBotAnswerListSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Me
 adhocBotAnswerListSingle sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
+			let open = isOpenValidation (fieldValidation field)
 			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
 			let currentValue = listToMaybe $ elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren field
 			let optionsText = fmap (listOptionText currentValue (s" [Current Value]")) options
-			sendText $ unlines $ [formatLabel (const Nothing) field] ++ optionsText ++ [s"Which number?"]
-			value <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly parser)
-			let maybeOption = fmap snd $ find (\(x, _) -> x == value) options
+			let currentValueText = fromMaybe (s"") $ currentValue >>= \value ->
+				if open && value `notElem` (map (mconcat . fieldValue . snd) options) then
+					Just $ s"[Current Value: " ++ value ++ s"]\n"
+				else
+					Nothing
+			let prompt = s"Please enter a number from the list above" ++ if open then s", or enter a custom option" else s""
+			sendText $ unlines $ [formatLabel (const Nothing) field] ++ optionsText ++ [currentValueText ++ prompt]
+			maybeOption <- if open then do
+					value <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly openParser)
+					return $ case value of
+						Left openValue -> Just [openValue]
+						Right itemNumber -> fmap (fieldValue . snd) $ find (\(x, _) -> x == itemNumber) options
+				else do
+					value <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly parser)
+					return $ fmap (fieldValue . snd) $ find (\(x, _) -> x == value) options
 			case maybeOption of
 				Just option -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
-						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ mconcat $ fieldValue option]
+						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ mconcat option]
 					]]
 				Nothing -> do
 					sendText $ s"Please pick one of the given options"
@@ -234,6 +247,7 @@ adhocBotAnswerListSingle sendText getMessage field = do
 	where
 	helperText = s"I didn't understand your answer. Please just send the number of the one item you want to pick, like \"1\""
 	parser = Atto.skipMany Atto.space *> Atto.decimal <* Atto.skipMany Atto.space
+	openParser = (Right <$> parser) <|> (Left <$> Atto.takeText)
 
 adhocBotAnswerForm :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m Element
 adhocBotAnswerForm sendText getMessage form = do
@@ -353,6 +367,18 @@ optionText element = fromMaybe (mconcat $ fieldValue element) (label element)
 fieldValue :: Element -> [Text]
 fieldValue = fmap (mconcat . elementText) .
 	isNamed (s"{jabber:x:data}value") <=< elementChildren
+
+fieldValidation :: Element -> Maybe Element
+fieldValidation =
+	listToMaybe .
+	(isNamed (s"{http://jabber.org/protocol/xdata-validate}validate") <=< elementChildren)
+
+isOpenValidation :: Maybe Element -> Bool
+isOpenValidation (Just el) =
+	not $ null $
+	isNamed (s"{http://jabber.org/protocol/xdata-validate}open")
+	=<< elementChildren el
+isOpenValidation _ = False
 
 desc :: Element -> Maybe Text
 desc = mfilter (not . T.null) . Just . mconcat .
