@@ -1,4 +1,4 @@
-image: debian/stable
+image: debian/buster
 sources:
 - https://git.sr.ht/~singpolyma/cheogram
 - https://git.sr.ht/~singpolyma/jingle-xmpp
@@ -24,7 +24,7 @@ tasks:
     cabal update
 - dependencies: |
     cd jingle-xmpp
-    cabal install --constraint="random <= 1.1" --constraint="attoparsec < 0.14" --constraint="memory < 0.16" --constraint="transformers-compat < 0.7"
+    cabal install --constraint="random <= 1.1" --constraint="attoparsec < 0.14" --constraint="memory < 0.16" --constraint="transformers-compat < 0.7" --constraint="aeson < 1.6"
     cd ..
     cd cheogram
     cabal install --enable-tests --only-dependencies
