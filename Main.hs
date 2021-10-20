@@ -1212,7 +1212,7 @@ cacheHTTP jingleStore url =
 		if HTTP.getStatusCode response == 200 then
 			fmap (fmap (\(fp,_,_,_) -> fp)) $
 			Jingle.storeChunks Nothing jingleStore
-			(escapeURIString isAlpha (textToString url))
+			(reverse $ take 240 $ reverse $ escapeURIString isAlphaNum (textToString url))
 			(hush <$> UIO.fromIO (fromMaybe mempty <$> Streams.read body))
 		else
 			return $ Left $ userError "Response was not 200 OK"
