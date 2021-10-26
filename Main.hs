@@ -142,33 +142,33 @@ code str status =
 
 cheogramDiscoInfo db componentJid sendIQ from q = do
 	canVoice <- isJust <$> getSipProxy db componentJid sendIQ from
-	return $ Element (fromString "{http://jabber.org/protocol/disco#info}query")
+	return $ Element (s"{http://jabber.org/protocol/disco#info}query")
 		(map (\node -> (s"{http://jabber.org/protocol/disco#info}node", [ContentText node])) $ maybeToList $ nodeAttribute =<< q)
 		(catMaybes [
-			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}identity") [
-				(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
-				(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "sms"]),
-				(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram"])
+			Just $ NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
+				(s"category", [ContentText $ s"gateway"]),
+				(s"type", [ContentText $ s"sms"]),
+				(s"name", [ContentText $ s"Cheogram"])
 				] [],
-			mfilter (const canVoice) $ Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}identity") [
-				(fromString "{http://jabber.org/protocol/disco#info}category", [ContentText $ fromString "gateway"]),
-				(fromString "{http://jabber.org/protocol/disco#info}type", [ContentText $ fromString "pstn"]),
-				(fromString "{http://jabber.org/protocol/disco#info}name", [ContentText $ fromString "Cheogram"])
+			mfilter (const canVoice) $ Just $ NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}identity") [
+				(s"category", [ContentText $ s"gateway"]),
+				(s"type", [ContentText $ s"pstn"]),
+				(s"name", [ContentText $ s"Cheogram"])
 			] [],
-			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "http://jabber.org/protocol/commands"])
+			Just $ NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+				(s"var", [ContentText $ s"http://jabber.org/protocol/commands"])
 			] [],
-			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:gateway"])
+			Just $ NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+				(s"var", [ContentText $ s"jabber:iq:gateway"])
 			] [],
-			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "jabber:iq:register"])
+			Just $ NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+				(s"var", [ContentText $ s"jabber:iq:register"])
 			] [],
-			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "urn:xmpp:ping"])
+			Just $ NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+				(s"var", [ContentText $ s"urn:xmpp:ping"])
 			] [],
-			Just $ NodeElement $ Element (fromString "{http://jabber.org/protocol/disco#info}feature") [
-				(fromString "{http://jabber.org/protocol/disco#info}var", [ContentText $ fromString "vcard-temp"])
+			Just $ NodeElement $ Element (s"{http://jabber.org/protocol/disco#info}feature") [
+				(s"var", [ContentText $ s"vcard-temp"])
 			] []
 		])
 
