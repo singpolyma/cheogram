@@ -124,11 +124,11 @@ getDirectInvitation m = do
 		Just (attributeText (fromString "password") x)
 
 nickFor db jid existingRoom
-	| fmap bareTxt existingRoom == Just bareFrom = return $ fromMaybe (fromString "nonick") resourceFrom
+	| fmap bareTxt existingRoom == Just bareFrom = return $ fromMaybe (s"nonick") resourceFrom
 	| Just tel <- mfilter isE164 (strNode <$> jidNode jid) = do
 		mnick <- maybe (return Nothing) (TC.runTCM .TC.get db) (tcKey jid "nick")
 		case mnick of
-			Just nick -> return (tel <> fromString " \"" <> fromString nick <> fromString "\"")
+			Just nick -> return (tel <> s" \"" <> nick <> s"\"")
 			Nothing -> return tel
 	| otherwise = return bareFrom
 	where
@@ -596,7 +596,7 @@ handleVerificationCode db componentJid password iq = do
 						stuff <- runMaybeT $ do
 							-- If there is a nick that doesn't end in _sms, add _sms
 							nick <- MaybeT . TC.runTCM . TC.get db =<< (hoistMaybe $ tcKey cheoJid "nick")
-							let nick' = (fromMaybe (fromString nick) $ T.stripSuffix (fromString "_sms") (fromString nick)) <> fromString "_sms"
+							let nick' = (fromMaybe (fromString nick) $ T.stripSuffix (s"_sms") nick) <> s"_sms"
 							tcPut db cheoJid "nick" (T.unpack nick')
 
 							room <- MaybeT ((parseJID <=< fmap bareTxt) <$> tcGetJID db cheoJid "joined")
@@ -1641,8 +1641,8 @@ rejoinRoom db cheoJid room rejoin = do
 		presenceID = Just $ fromString $ (if rejoin then "CHEOGRAMREJOIN%" else "CHEOGRAMJOIN%") <> uuid,
 		presenceTo = Just room,
 		presenceFrom = Just cheoJid,
-		presencePayloads = [Element (fromString "{http://jabber.org/protocol/muc}x") [] ([
-			NodeElement $ Element (fromString "{http://jabber.org/protocol/muc}history") [(fromString "{http://jabber.org/protocol/muc}maxchars", [ContentText $ fromString "0"])] []
+		presencePayloads = [Element (s"{http://jabber.org/protocol/muc}x") [] ([
+			NodeElement $ Element (s"{http://jabber.org/protocol/muc}history") [(s"{http://jabber.org/protocol/muc}maxchars", [ContentText $ fromString "0"])] []
 		] <> pwEl)]
 	}]
 
@@ -1652,11 +1652,11 @@ addMUCOwner room from jid = do
 		iqTo = Just room,
 		iqFrom = Just from,
 		iqID = fmap fromString uuid,
-		iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#admin}admin") [] [
-			NodeElement $ Element (fromString "{http://jabber.org/protocol/muc#admin}item")
+		iqPayload = Just $ Element (s"{http://jabber.org/protocol/muc#admin}admin") [] [
+			NodeElement $ Element (s"{http://jabber.org/protocol/muc#admin}item")
 				[
-					(fromString "{http://jabber.org/protocol/muc#admin}affiliation", [ContentText $ fromString "owner"]),
-					(fromString "{http://jabber.org/protocol/muc#admin}jid", [ContentText $ formatJID jid])
+					(s"{http://jabber.org/protocol/muc#admin}affiliation", [ContentText $ s"owner"]),
+					(s"{http://jabber.org/protocol/muc#admin}jid", [ContentText $ formatJID jid])
 				] []
 		]
 	}]
@@ -1730,22 +1730,22 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 					(++) <$>
 					leaveRoom db cheoJid "Joined a different room." <*>
 					joinRoom db cheoJid room
-				Nothing -> return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "You have not recently been invited to a group")]
+				Nothing -> return [mkStanzaRec $ mkSMS componentJid smsJid (s"You have not recently been invited to a group")]
 		Just JoinInvitedWrong
-			| Just room <- existingRoom -> sendToRoom cheoJid room (fromString "Join")
+			| Just room <- existingRoom -> sendToRoom cheoJid room (s"Join")
 			| otherwise -> do
 				invitedRoom <- tcGetJID db cheoJid "invited"
 				let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> fromString "/" <> nick)
 				case toJoin of
 					Just room ->
-						fmap ((mkStanzaRec $ mkSMS componentJid smsJid (fromString "I think you meant \"/join\", trying anyway...")):)
+						fmap ((mkStanzaRec $ mkSMS componentJid smsJid (s"I think you meant \"/join\", trying anyway...")):)
 						(joinRoom db cheoJid room)
-					Nothing -> return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "You have not recently been invited to a group")]
+					Nothing -> return [mkStanzaRec $ mkSMS componentJid smsJid (s"You have not recently been invited to a group")]
 		Just (Create name) -> do
 			servers <- shuffleM conferenceServers
 			roomCreateStanzas <- createRoom componentJid servers cheoJid name
 			if null roomCreateStanzas then
-				return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "Invalid group name")]
+				return [mkStanzaRec $ mkSMS componentJid smsJid (s"Invalid group name")]
 			else
 				return roomCreateStanzas
 		Just (Join room) -> do
