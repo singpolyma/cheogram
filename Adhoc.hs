@@ -19,7 +19,6 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.UUID as UUID ( toString, toText )
 import qualified Data.UUID.V1 as UUID ( nextUUID )
-import qualified Database.TokyoCabinet as TC
 import qualified UnexceptionalIO.Trans ()
 import qualified UnexceptionalIO as UIO
 
@@ -27,6 +26,7 @@ import StanzaRec
 import UniquePrefix
 import Util
 import qualified ConfigureDirectMessageRoute
+import qualified DB
 
 sessionLifespan :: Int
 sessionLifespan = 60 * 60 * seconds
@@ -410,8 +410,8 @@ getServerInfoForm = find (\el ->
 		getFormField el (s"FORM_TYPE") == Just (s"http://jabber.org/network/serverinfo")
 	) . (isNamed (s"{jabber:x:data}x") =<<)
 
-sendHelp :: (UIO.Unexceptional m, TC.TCDB db) =>
-	   db
+sendHelp :: (UIO.Unexceptional m) =>
+	   DB.DB
 	-> JID
 	-> (XMPP.Message -> m ())
 	-> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ)))
@@ -419,8 +419,8 @@ sendHelp :: (UIO.Unexceptional m, TC.TCDB db) =>
 	-> JID
 	-> m ()
 sendHelp db componentJid sendMessage sendIQ from routeFrom = do
-	maybeRoute <- fmap (join . hush) $ UIO.fromIO $ TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-	case parseJID =<< fmap fromString maybeRoute of
+	maybeRoute <- (parseJID =<<) . (join . hush) <$> UIO.fromIO (DB.get db (DB.byJid from ["direct-message-route"]))
+	case maybeRoute of
 		Just route -> do
 			replySTM <- UIO.lift $ sendIQ $ queryCommandList' route routeFrom
 			discoInfoSTM <- UIO.lift $ sendIQ $ queryDiscoWithNode' Nothing route routeFrom
@@ -438,7 +438,7 @@ sendHelp db componentJid sendMessage sendIQ from routeFrom = do
 				Just msg -> sendMessage msg
 				Nothing -> log "INVALID HELP MESSAGE" ()
 
-adhocBotRunCommand :: (TC.TCDB db, UIO.Unexceptional m) => db -> JID -> JID -> (XMPP.Message -> m ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> JID -> Text -> [Element] -> m ()
+adhocBotRunCommand :: (UIO.Unexceptional m) => DB.DB -> JID -> JID -> (XMPP.Message -> m ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> JID -> Text -> [Element] -> m ()
 adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from body cmdEls = do
 	let (nodes, cmds) = unzip $ mapMaybe (\el -> (,) <$> attributeText (s"node") el <*> pure el) cmdEls
 
@@ -549,11 +549,11 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 				| otherwise -> sendMessage $ mkSMS componentJid from (s"Command error")
 			Nothing -> sendMessage $ mkSMS componentJid from (s"Command timed out")
 
-adhocBotSession :: (UIO.Unexceptional m, TC.TCDB db) => db -> JID -> (XMPP.Message -> m ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> XMPP.Message-> m ()
+adhocBotSession :: (UIO.Unexceptional m) => DB.DB -> JID -> (XMPP.Message -> m ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> XMPP.Message-> m ()
 adhocBotSession db componentJid sendMessage sendIQ getMessage message@(XMPP.Message { XMPP.messageFrom = Just from })
 	| Just body <- getBody "jabber:component:accept" message = do
-		maybeRoute <- fmap (join . hush) $ UIO.fromIO $ TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-		case parseJID =<< fmap fromString maybeRoute of
+		maybeRoute <- (parseJID =<<) . (join . hush) <$> UIO.fromIO (DB.get db (DB.byJid from ["direct-message-route"]))
+		case maybeRoute of
 			Just route -> do
 				mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
 				case iqPayload =<< mfilter ((==IQResult) . iqType) mreply of

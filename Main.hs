@@ -9,7 +9,7 @@ import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import Data.Traversable (forM, mapM)
 import System.Environment (getArgs)
-import Control.Error (readZ, MaybeT(..), hoistMaybe, headZ, justZ, hush)
+import Control.Error (readZ, MaybeT(..), hoistMaybe, headZ, justZ, hush, atZ)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Network (PortID(PortNumber))
 import Network.URI (parseURI, uriPath, escapeURIString)
@@ -36,7 +36,6 @@ import qualified Data.ByteString.Lazy as LZ
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Builder as Builder
-import qualified Database.TokyoCabinet as TC
 import qualified Database.Redis as Redis
 import qualified Text.Regex.PCRE.Light as PCRE
 import qualified Network.Http.Client as HTTP
@@ -47,21 +46,12 @@ import Util
 import IQManager
 import qualified ConfigureDirectMessageRoute
 import qualified Config
+import qualified DB
 import Adhoc (adhocBotSession, commandList, queryCommandList)
 import StanzaRec
 
 instance Ord JID where
 	compare x y = compare (show x) (show y)
-
-tcKey jid key = fmap (\node -> (T.unpack $ strNode node) <> "\0" <> key) (jidNode jid)
-tcGetJID db jid key = liftIO $ case tcKey jid key of
-	Just tck -> (parseJID . fromString =<<) <$> TC.runTCM (TC.get db tck)
-	Nothing -> return Nothing
-tcPutJID db cheoJid key jid = tcPut db cheoJid key $ T.unpack $ formatJID jid
-tcPut db cheoJid key val = liftIO $ do
-	let Just tck = tcKey cheoJid key
-	True <- TC.runTCM (TC.put db tck val)
-	return ()
 
 queryDisco to from = (:[]) . mkStanzaRec <$> queryDiscoWithNode Nothing to from
 
@@ -126,7 +116,7 @@ getDirectInvitation m = do
 nickFor db jid existingRoom
 	| fmap bareTxt existingRoom == Just bareFrom = return $ fromMaybe (s"nonick") resourceFrom
 	| Just tel <- mfilter isE164 (strNode <$> jidNode jid) = do
-		mnick <- maybe (return Nothing) (TC.runTCM .TC.get db) (tcKey jid "nick")
+		mnick <- DB.get db (DB.byNode jid ["nick"])
 		case mnick of
 			Just nick -> return (tel <> s" \"" <> nick <> s"\"")
 			Nothing -> return tel
@@ -200,11 +190,11 @@ telDiscoFeatures = [
 		s"urn:xmpp:jingle:transports:ibb:1"
 	]
 
-getSipProxy :: TC.HDB -> JID -> (IQ -> UIO (STM (Maybe IQ))) -> JID -> IO (Maybe Text)
+getSipProxy :: DB.DB -> JID -> (IQ -> UIO (STM (Maybe IQ))) -> JID -> IO (Maybe Text)
 getSipProxy db componentJid sendIQ jid = do
-	maybeProxy <- TC.runTCM $ TC.get db $ T.unpack (bareTxt jid) ++ "\0sip-proxy"
+	maybeProxy <- DB.get db (DB.byJid jid ["sip-proxy"])
 	case maybeProxy of
-		Just proxy -> return $ Just $ T.pack proxy
+		Just proxy -> return $ Just proxy
 		Nothing ->
 			(extractSip =<<) <$> routeQueryStateful db componentJid sendIQ jid Nothing query
 	where
@@ -274,8 +264,8 @@ telDiscoInfo q id from to disco =
 	}
 
 routeQueryOrReply db componentJid from smsJid resource query reply = do
-	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-	case (fmap fromString maybeRoute, maybeRouteFrom) of
+	maybeRoute <- DB.get db (DB.byJid from ["direct-message-route"])
+	case (maybeRoute, maybeRouteFrom) of
 		(Just route, Just routeFrom) ->
 				let routeTo = fromMaybe componentJid $ parseJID $ (maybe mempty (++ s"@") $ strNode <$> jidNode smsJid) ++ route in
 				query routeTo routeFrom
@@ -284,8 +274,8 @@ routeQueryOrReply db componentJid from smsJid resource query reply = do
 	maybeRouteFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/" ++ (fromString resource)
 
 routeQueryStateful db componentJid sendIQ from targetNode query = do
-	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-	case (fmap fromString maybeRoute, maybeRouteFrom) of
+	maybeRoute <- DB.get db (DB.byJid from ["direct-message-route"])
+	case (maybeRoute, maybeRouteFrom) of
 		(Just route, Just routeFrom) -> do
 			let Just routeTo = parseJID $ (maybe mempty (++ s"@") $ strNode <$> targetNode) ++ route
 			iqToSend <- query routeTo routeFrom
@@ -346,13 +336,10 @@ mapBody f (m@Message { messagePayloads = payloads }) =
 	}
 
 unregisterDirectMessageRoute db componentJid userJid route = do
-	maybeCheoJid <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid) ++ "\0cheoJid"))
+	maybeCheoJid <- (parseJID =<<) <$> DB.get db (DB.byJid userJid ["cheoJid"])
 	forM_ maybeCheoJid $ \cheoJid -> do
-		TC.runTCM $ TC.out db (T.unpack (bareTxt userJid) ++ "\0cheoJid")
-
-		owners <- (fromMaybe [] . (readZ =<<)) <$>
-			maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "owners")
-		tcPut db cheoJid "owners" (show $ (filter (/= bareTxt userJid)) owners)
+		DB.del db (DB.byJid userJid ["cheoJid"])
+		DB.srem db (DB.byNode cheoJid ["owners"]) [bareTxt userJid]
 
 	uuid <- (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
 	return $ (emptyIQ IQSet) {
@@ -364,9 +351,9 @@ unregisterDirectMessageRoute db componentJid userJid route = do
 			]
 		}
 
-toRouteOrFallback db componentJid bareFrom resourceFrom smsJid m fallback = do
-	maybeRoute <- TC.runTCM $ TC.get db (T.unpack bareFrom ++ "\0direct-message-route")
-	case (fmap fromString maybeRoute, parseJID $ escapeJid bareFrom ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
+toRouteOrFallback db componentJid from smsJid m fallback = do
+	maybeRoute <- DB.get db (DB.byJid from ["direct-message-route"])
+	case (maybeRoute, parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
 		(Just route, Just routeFrom) -> do
 			return [mkStanzaRec $ m {
 				messageFrom = Just routeFrom,
@@ -374,18 +361,18 @@ toRouteOrFallback db componentJid bareFrom resourceFrom smsJid m fallback = do
 			}]
 		_ -> fallback
 	where
-	resourceSuffix = maybe mempty (s"/"++) resourceFrom
+	resourceSuffix = maybe mempty (s"/"++) (strResource <$> jidResource from)
 
-componentMessage db componentJid (m@Message { messageType = MessageError }) _ bareFrom resourceFrom smsJid body = do
+componentMessage db componentJid (m@Message { messageType = MessageError }) _ from smsJid body = do
 	log "MESSAGE ERROR"  m
-	toRouteOrFallback db componentJid bareFrom resourceFrom smsJid m $ do
+	toRouteOrFallback db componentJid from smsJid m $ do
 		log "DIRECT FROM GATEWAY" smsJid
 		return [mkStanzaRec $ m { messageTo = Just smsJid, messageFrom = Just componentJid }]
-componentMessage db componentJid m@(Message { messageTo = Just to }) existingRoom _ _ smsJid _
+componentMessage db componentJid m@(Message { messageTo = Just to }) existingRoom _ smsJid _
 	| Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
 		forM_ (invitePassword invite) $ \password ->
-			tcPut db to (T.unpack (formatJID $ inviteMUC invite) <> "\0muc_roomsecret") (T.unpack password)
-		existingInvite <- tcGetJID db to "invited"
+			DB.set db (DB.byNode to [textToString $ formatJID $ inviteMUC invite, "muc_roomsecret"]) password
+		existingInvite <- (parseJID =<<) <$> DB.get db (DB.byNode to ["invited"])
 		nick <- nickFor db (inviteFrom invite) existingRoom
 		let txt = mconcat [
 				fromString "* ",
@@ -395,30 +382,30 @@ componentMessage db componentJid m@(Message { messageTo = Just to }) existingRoo
 				fromString "\nYou can switch to this group by replying with /join"
 			]
 		if (existingRoom /= Just (inviteMUC invite) && existingInvite /= Just (inviteMUC invite)) then do
-			tcPutJID db to "invited" (inviteMUC invite)
-			regJid <- tcGetJID db to "registered"
+			DB.set db (DB.byNode to ["invited"]) (formatJID $ inviteMUC invite)
+			regJid <- (parseJID =<<) <$> DB.get db (DB.byNode to ["registered"])
 			fmap (((mkStanzaRec $ mkSMS componentJid smsJid txt):) . concat . toList)
 				(forM regJid $ \jid -> sendInvite db jid (invite { inviteFrom = to }))
 		else
 			return []
-componentMessage _ componentJid (m@Message { messageType = MessageGroupChat }) existingRoom bareFrom resourceFrom smsJid (Just body) = do
-	if fmap bareTxt existingRoom == Just bareFrom && (
-	   existingRoom /= parseJID (bareFrom <> fromString "/" <> fromMaybe mempty resourceFrom) ||
+componentMessage _ componentJid (m@Message { messageType = MessageGroupChat }) existingRoom from smsJid (Just body) = do
+	if fmap bareTxt existingRoom == Just (bareTxt from) && (
+	   existingRoom /= Just from ||
 	   not (fromString "CHEOGRAM%" `T.isPrefixOf` fromMaybe mempty (messageID m))) then
 		return [mkStanzaRec $ mkSMS componentJid smsJid txt]
 	else do
-		log "MESSAGE FROM WRONG GROUP" (fmap bareTxt existingRoom, bareFrom, m)
+		log "MESSAGE FROM WRONG GROUP" (fmap bareTxt existingRoom, from, m)
 		return []
 	where
-	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") resourceFrom, fromString ") ", body]
-componentMessage db componentJid m@(Message { messageFrom = Just from, messageTo = Just to }) existingRoom bareFrom resourceFrom smsJid (Just body) = do
+	txt = mconcat [fromString "(", fromMaybe (fromString "nonick") (strResource <$> jidResource from), fromString ") ", body]
+componentMessage db componentJid m@(Message { messageTo = Just to }) existingRoom from smsJid (Just body) = do
 	ack <- case isNamed (fromString "{urn:xmpp:receipts}request") =<< messagePayloads m of
 		(_:_) ->
 			routeDiscoOrReply db componentJid from smsJid ("CHEOGRAM%query-then-send-ack%" ++ extra) Nothing
 				(deliveryReceipt (fromMaybe mempty $ messageID m) to from)
 		[] -> return []
 
-	fmap (++ack) $ toRouteOrFallback db componentJid bareFrom resourceFrom smsJid strippedM $
+	fmap (++ack) $ toRouteOrFallback db componentJid from smsJid strippedM $
 		case PCRE.match autolinkRegex (encodeUtf8 body) [] of
 			Just _ -> do
 				log "WHISPER URL" m
@@ -439,24 +426,20 @@ componentMessage db componentJid m@(Message { messageFrom = Just from, messageTo
 	where
 	strippedM = mapBody (const strippedBody) m
 	strippedBody = stripOtrWhitespace body
-	extra = T.unpack $ escapeJid $ T.pack $ show (fromMaybe mempty (messageID m), fromMaybe mempty resourceFrom)
-componentMessage _ _ m _ _ _ _ _ = do
+	extra = T.unpack $ escapeJid $ T.pack $ show (fromMaybe mempty (messageID m), maybe mempty strResource $ jidResource from)
+componentMessage _ _ m _ _ _ _ = do
 	log "UNKNOWN MESSAGE" m
 	return []
 
 handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads join
 	| join,
-	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads,
+	  [x] <- isNamed (s"{http://jabber.org/protocol/muc#user}x") =<< payloads,
 	  not $ null $ code "110" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
-		existingInvite <- tcGetJID db to "invited"
-		when (existingInvite == parseJID bareMUC) $ do
-			let Just invitedKey = tcKey to "invited"
-			True <- TC.runTCM $ TC.out db invitedKey
-			return ()
-		tcPutJID db to "joined" from
-		let Just bookmarksKey = tcKey to "bookmarks"
-		bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db bookmarksKey)
-		tcPut db to "bookmarks" (show $ sort $ nub $ T.unpack bareMUC : bookmarks)
+		existingInvite <- (parseJID =<<) <$> DB.get db (DB.byNode to ["invited"])
+		when (existingInvite == parseJID bareMUC) $
+			DB.del db (DB.byNode to ["invited"])
+		DB.set db (DB.byNode to ["joined"]) (formatJID from)
+		DB.sadd db (DB.byNode to ["bookmarks"]) [bareMUC]
 
 		presences <- syncCall toRoomPresences $ GetRoomPresences to from
 		atomically $ writeTChan toRoomPresences $ RecordSelfJoin to from (Just to)
@@ -505,8 +488,7 @@ handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer compon
 		void $ forkIO $ threadDelay 5000000 >> atomically (writeTChan toRejoinManager $ ForceRejoin from to)
 		return []
 	| not join && existingRoom == Just from = do
-		let Just joinedKey = tcKey to "joined"
-		True <- TC.runTCM $ TC.out db joinedKey
+		DB.del db (DB.byNode to ["joined"])
 		atomically $ writeTChan toRoomPresences $ RecordPart to from
 		atomically $ writeTChan toRoomPresences $ Clear to from
 		return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "* You have left " <> bareMUC)]
@@ -566,7 +548,8 @@ data RegistrationCode = RegistrationCode { regCode :: Int, cheoJid :: Text, expi
 registerVerification db componentJid to iq = do
 	code <- getStdRandom (randomR (123457::Int,987653))
 	time <- getCurrentTime
-	True <- TC.runTCM $ TC.put db ((maybe mempty T.unpack $ bareTxt <$> iqFrom iq) <> "\0registration_code") $ show $ RegistrationCode code (formatJID to) time
+	forM_ (iqFrom iq) $ \from ->
+		DB.set db (DB.byJid from ["registration_code"]) $ tshow $ RegistrationCode code (formatJID to) time
 	return [
 			mkStanzaRec $ mkSMS componentJid to $ fromString ("Enter this verification code to complete registration: " <> show code),
 			mkStanzaRec $ iq {
@@ -577,29 +560,29 @@ registerVerification db componentJid to iq = do
 			}
 		]
 
-handleVerificationCode db componentJid password iq = do
+handleVerificationCode db componentJid password iq from = do
 	time <- getCurrentTime
-	codeAndTime <- fmap (readZ =<<) $ TC.runTCM $ TC.get db regKey
+	codeAndTime <- fmap (readZ . textToString =<<) $ DB.get db (DB.byJid from ["registration_code"])
 	case codeAndTime of
 		Just (RegistrationCode { regCode = code, cheoJid = cheoJidT })
 			| fmap expires codeAndTime > Just ((-300) `addUTCTime` time) ->
-				case (show code == T.unpack password, iqTo iq, iqFrom iq, parseJID cheoJidT) of
-					(True, Just to, Just from, Just cheoJid) -> do
-						bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "bookmarks"))
+				case (show code == T.unpack password, iqTo iq, parseJID cheoJidT) of
+					(True, Just to, Just cheoJid) -> do
+						bookmarks <- DB.smembers db (DB.byNode cheoJid ["bookmarks"])
 						invites <- fmap concat $ forM (mapMaybe parseJID bookmarks) $ \bookmark ->
 							sendInvite db from (Invite bookmark cheoJid (Just $ fromString "Cheogram registration") Nothing)
 
-						let Just tel = T.unpack . strNode <$> jidNode cheoJid
-						True <- TC.runTCM $ TC.put db (T.unpack (bareTxt from) <> "\0registered") tel
-						tcPutJID db cheoJid "registered" from
+						let Just tel = strNode <$> jidNode cheoJid
+						DB.set db (DB.byJid from ["registered"]) tel
+						DB.set db (DB.byNode cheoJid ["registered"]) (bareTxt from)
 
 						stuff <- runMaybeT $ do
 							-- If there is a nick that doesn't end in _sms, add _sms
-							nick <- MaybeT . TC.runTCM . TC.get db =<< (hoistMaybe $ tcKey cheoJid "nick")
-							let nick' = (fromMaybe (fromString nick) $ T.stripSuffix (s"_sms") nick) <> s"_sms"
-							tcPut db cheoJid "nick" (T.unpack nick')
+							nick <- MaybeT $ DB.get db (DB.byNode cheoJid ["nick"])
+							let nick' = (fromMaybe nick $ T.stripSuffix (s"_sms") nick) <> s"_sms"
+							liftIO $ DB.set db (DB.byNode cheoJid ["nick"]) nick'
 
-							room <- MaybeT ((parseJID <=< fmap bareTxt) <$> tcGetJID db cheoJid "joined")
+							room <- MaybeT $ (parseJID =<<) <$> DB.get db (DB.byNode cheoJid ["joined"])
 							toJoin <- hoistMaybe $ parseJID (bareTxt room <> fromString "/" <> nick')
 							liftIO $ joinRoom db cheoJid toJoin
 
@@ -619,14 +602,12 @@ handleVerificationCode db componentJid password iq = do
 								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}not-authorized") [] []]
 						}]
 		_ -> do
-			void $ TC.runTCM $ TC.out db regKey
+			DB.del db (DB.byJid from ["registration_code"])
 			return []
-	where
-	regKey = (maybe mempty T.unpack $ bareTxt <$> iqFrom iq) <> "\0registration_code"
 
-handleRegister db componentJid iq@(IQ { iqType = IQGet }) _ = do
+handleRegister db componentJid iq@(IQ { iqType = IQGet, iqFrom = Just from }) _ = do
 	time <- getCurrentTime
-	codeAndTime <- fmap (readZ =<<) $ TC.runTCM $ TC.get db ((maybe mempty T.unpack $ bareTxt <$> iqFrom iq) <> "\0registration_code")
+	codeAndTime <- fmap (readZ . textToString =<<) $ DB.get db (DB.byJid from ["registration_code"])
 	if fmap expires codeAndTime > Just ((-300) `addUTCTime` time) then
 		return [mkStanzaRec $ iq {
 			iqTo = iqFrom iq,
@@ -674,19 +655,19 @@ handleRegister db componentJid iq@(IQ { iqType = IQSet }) query
 	| [phoneEl] <- isNamed (fromString "{jabber:iq:register}phone") =<< elementChildren query,
 	  Just to <- (`telToJid` formatJID componentJid) $ T.filter isDigit $ mconcat (elementText phoneEl) = do
 		registerVerification db componentJid to iq
-handleRegister db componentJid iq@(IQ { iqType = IQSet }) query
+handleRegister db componentJid iq@(IQ { iqType = IQSet, iqFrom = Just from }) query
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query,
 	  Just password <- getFormField form (fromString "password") = do
-		handleVerificationCode db componentJid password iq
-handleRegister db componentJid iq@(IQ { iqType = IQSet, iqPayload = Just payload }) query
+		handleVerificationCode db componentJid password iq from
+handleRegister db componentJid iq@(IQ { iqType = IQSet, iqPayload = Just payload, iqFrom = Just from }) query
 	| [passwordEl] <- isNamed (fromString "{jabber:iq:register}password") =<< elementChildren query = do
-		handleVerificationCode db componentJid (mconcat $ elementText passwordEl) iq
-handleRegister db componentJid iq@(IQ { iqType = IQSet }) query
+		handleVerificationCode db componentJid (mconcat $ elementText passwordEl) iq from
+handleRegister db componentJid iq@(IQ { iqFrom = Just from, iqType = IQSet }) query
 	| [_] <- isNamed (fromString "{jabber:iq:register}remove") =<< elementChildren query = do
-		tel <- maybe mempty T.pack <$> TC.runTCM (TC.get db $ T.unpack (maybe mempty bareTxt $ iqFrom iq) <> "\0registered")
-		forM_ (telToJid tel (formatJID componentJid) >>= \cheoJid -> tcKey cheoJid "registered") $ \regKey ->
-			TC.runTCM $ TC.out db regKey
-		void $ TC.runTCM $ TC.out db $ T.unpack (maybe mempty bareTxt $ iqFrom iq) <> "\0registered"
+		tel <- fromMaybe mempty <$> DB.get db (DB.byJid from ["registered"])
+		forM_ (telToJid tel (formatJID componentJid)) $ \cheoJid ->
+			DB.del db (DB.byNode cheoJid  ["registered"])
+		DB.del db (DB.byJid from ["registered"])
 		return [mkStanzaRec $ iq {
 			iqTo = iqFrom iq,
 			iqFrom = iqTo iq,
@@ -709,7 +690,7 @@ handleRegister _ _ iq _ = do
 	return []
 
 data ComponentContext = ComponentContext {
-	db :: TC.HDB,
+	db :: DB.DB,
 	smsJid :: Maybe JID,
 	registrationJids :: [JID],
 	adhocBotMessage :: Message -> STM (),
@@ -753,11 +734,9 @@ componentStanza _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom
 	  not $ null $ code "104" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
 		queryDisco from to
 componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid }) (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from})) = do
-	existingRoom <- tcGetJID db to "joined"
-	componentMessage db componentJid m existingRoom (bareTxt from) resourceFrom smsJid $
+	existingRoom <- (parseJID =<<) <$> DB.get db (DB.byNode to ["joined"])
+	componentMessage db componentJid m existingRoom from smsJid $
 		getBody "jabber:component:accept" m
-	where
-	resourceFrom = strResource <$> jidResource from
 componentStanza (ComponentContext { smsJid = (Just smsJid), toRejoinManager, componentJid }) (ReceivedPresence p@(Presence { presenceType = PresenceError, presenceFrom = Just from, presenceTo = Just to, presenceID = Just id }))
 	| fromString "CHEOGRAMREJOIN%" `T.isPrefixOf` id = do
 		log "FAILED TO REJOIN, try again in 10s" p
@@ -776,7 +755,7 @@ componentStanza (ComponentContext { db, smsJid = (Just smsJid), toRoomPresences,
 		presenceTo = Just to,
 		presencePayloads = payloads
 	})) | typ `elem` [PresenceAvailable, PresenceUnavailable] = do
-		existingRoom <- tcGetJID db to "joined"
+		existingRoom <- (parseJID =<<) <$> DB.get db (DB.byNode to ["joined"])
 		handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads (typ == PresenceAvailable)
 componentStanza (ComponentContext { db, componentJid, sendIQ, maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	avail <- cheogramAvailable db componentJid sendIQ to from
@@ -924,10 +903,10 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqT
 	  attributeText (s"node") payload == Just (s"sip-proxy-set"),
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren payload,
 	  Just proxy <- getFormField form (s"sip-proxy") = do
-		True <- if T.null proxy then
-			TC.runTCM $ TC.out db $ T.unpack (bareTxt from) ++ "\0sip-proxy"
+		if T.null proxy then
+			DB.del db (DB.byJid from ["sip-proxy"])
 		else
-			TC.runTCM $ TC.put db (T.unpack (bareTxt from) ++ "\0sip-proxy") $ T.unpack proxy
+			DB.set db (DB.byJid from ["sip-proxy"]) proxy
 		return [mkStanzaRec $ iqReply Nothing iq]
 componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = Just payload, iqFrom = Just from }))
 	| jidNode to == Nothing,
@@ -936,7 +915,7 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqT
 	  attributeText (s"node") payload == Just (s"push-register"),
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren payload,
 	  Just pushRegisterTo <- XMPP.parseJID =<< getFormField form (s"to") = do
-		TC.runTCM (TC.put db (T.unpack (bareTxt pushRegisterTo) ++ "\0possible-route") (T.unpack $ XMPP.formatJID from))
+		DB.set db (DB.byJid pushRegisterTo ["possible-route"]) (XMPP.formatJID from)
 		return [
 				mkStanzaRec $ iqReply (
 					Just $ Element (s"{http://jabber.org/protocol/commands}command")
@@ -1074,8 +1053,8 @@ componentStanza (ComponentContext { db }) (ReceivedIQ (iq@IQ { iqType = IQError,
 		log "create@ ERROR" (from, to, iq)
 		case T.splitOn (fromString "|") resource of
 			(cheoJidT:_) | Just cheoJid <- parseJID cheoJidT -> do
-				mnick <- maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "nick")
-				let nick = maybe (maybe mempty strNode (jidNode cheoJid)) fromString mnick
+				mnick <- DB.get db (DB.byNode cheoJid ["nick"])
+				let nick = fromMaybe (maybe mempty strNode (jidNode cheoJid)) mnick
 				let Just room = parseJID $ bareTxt from <> fromString "/" <> nick
 				(++) <$>
 					leaveRoom db cheoJid "Joined a different room." <*>
@@ -1163,10 +1142,10 @@ componentStanza (ComponentContext { db, componentJid, sendIQ }) (ReceivedIQ (IQ 
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		let vars = mapMaybe (attributeText (fromString "var")) $
 			isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query
-		let muc_membersonly = fromEnum $ fromString "muc_membersonly" `elem` vars
-		True <- TC.runTCM $ TC.put db (T.unpack (formatJID from) <> "\0muc_membersonly") muc_membersonly
+		let muc_membersonly = s"muc_membersonly" `elem` vars
+		DB.setEnum db (DB.byJid from ["muc_membersonly"]) muc_membersonly
 		if (fmap strResource (jidResource to) == Just (fromString "create")) then do
-			regJid <- tcGetJID db to "registered"
+			regJid <- (parseJID =<<) <$> DB.get db (DB.byNode to ["registered"])
 			fmap (concat . toList) $ forM ((,) <$> regJid <*> parseJID (bareTxt to)) $ \(jid, to) ->
 				sendInvite db jid (Invite from to Nothing Nothing)
 		else
@@ -1182,8 +1161,8 @@ componentStanza _ (ReceivedIQ (iq@IQ { iqType = IQGet, iqFrom = Just from, iqTo 
 componentStanza (ComponentContext { db, smsJid = maybeSmsJid, componentJid }) (ReceivedIQ (iq@IQ { iqType = typ, iqFrom = Just from }))
 	| fmap strResource (jidResource =<< iqTo iq) /= Just (s"capsQuery") = do
 	let resourceSuffix = maybe mempty (s"/"++) $ fmap strResource (jidResource from)
-	maybeRoute <- TC.runTCM $ TC.get db (T.unpack (bareTxt from) ++ "\0direct-message-route")
-	case (fmap fromString maybeRoute, parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
+	maybeRoute <- DB.get db (DB.byJid from ["direct-message-route"])
+	case (maybeRoute, parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ resourceSuffix) of
 		(Just route, Just routeFrom) -> do
 			return [mkStanzaRec $ iq {
 				iqFrom = Just routeFrom,
@@ -1344,20 +1323,18 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 					liftIO (mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt)
 			(Just from, Just to, Nothing, Just localpart, ReceivedMessage m)
 				| Just txt <- getBody "jabber:component:accept" m,
+				  Just owner <- parseJID (unescapeJid localpart),
 				  (T.length txt == 144 || T.length txt == 145) && (s"CHEOGRAM") `T.isPrefixOf` txt -> liftIO $ do -- the length of our token messages
 					log "POSSIBLE TOKEN" (from, to, txt)
-					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
-					when (Just (strDomain $ jidDomain from) == fmap fromString maybeRoute || bareTxt from == unescapeJid localpart) $ do
-						maybeToken <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0addtoken")
-						case (fmap (first parseJID) (readZ =<< maybeToken), parseJID $ unescapeJid localpart) of
-							(Just (Just cheoJid, token), Just owner) | (s"CHEOGRAM"++token) == txt -> do
+					maybeRoute <- DB.get db (DB.byJid owner ["direct-message-route"])
+					when (Just (strDomain $ jidDomain from) == maybeRoute || bareTxt from == bareTxt owner) $ do
+						maybeToken <- DB.get db (DB.byJid owner ["addtoken"])
+						case (fmap (first parseJID) (readZ . textToString =<< maybeToken)) of
+							(Just (Just cheoJid, token)) | (s"CHEOGRAM"++token) == txt -> do
 								log "SET OWNER" (cheoJid, owner)
 
-								True <- TC.runTCM (TC.put db (T.unpack (bareTxt owner) ++ "\0cheoJid") (T.unpack $ formatJID cheoJid))
-
-								owners <- (fromMaybe [] . (readZ =<<)) <$>
-									maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "owners")
-								tcPut db cheoJid "owners" (show $ (T.unpack $ bareTxt owner) : owners)
+								DB.set db (DB.byJid owner ["cheoJid"]) (formatJID cheoJid)
+								DB.sadd db (DB.byNode cheoJid ["owners"]) [bareTxt owner]
 
 							_ -> log "NO TOKEN FOUND, or mismatch" maybeToken
 			(Just from, Just to, Nothing, Just localpart, _)
@@ -1374,7 +1351,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 					] } in
 					-- TODO: should check if backend supports XEP-0033
 					-- TODO: fallback for no-backend case should work
-					mapM_ sendToComponent =<< componentMessage db componentJid m' Nothing (bareTxt from) (strResource <$> jidResource from) backendJid (getBody "jabber:component:accept" m')
+					mapM_ sendToComponent =<< componentMessage db componentJid m' Nothing from backendJid (getBody "jabber:component:accept" m')
 				| (s"sip.cheogram.com") == strDomain (jidDomain from) -> liftIO $ do
 					let (toResource, fromResource)
 						| Just toResource <- T.stripPrefix (s"CHEOGRAM%outbound-sip%") =<< (strResource <$> jidResource to) = (toResource, s"tel")
@@ -1390,11 +1367,11 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
 			(Just from, Just to, Nothing, Just localpart, _)
 				| Nothing <- mapM localpartToURI (T.split (==',') $ fromMaybe mempty $ fmap strNode $ jidNode to),
+				  Just routeTo <- parseJID (unescapeJid localpart ++ maybe mempty (s"/"++) (strResource <$> jidResource to)),
 				  fmap (((s"CHEOGRAM%") `T.isPrefixOf`) . strResource) (jidResource to) /= Just True -> liftIO $ do
-					let toResourceSuffix = maybe mempty (s"/"++) (strResource <$> jidResource to)
-					maybeRoute <- TC.runTCM $ TC.get db (T.unpack (unescapeJid localpart) ++ "\0direct-message-route")
-					case (fmap fromString maybeRoute, parseJID (unescapeJid localpart ++ toResourceSuffix), mapToComponent from) of
-						(Just route, Just routeTo, Just componentFrom) | route == strDomain (jidDomain from) ->
+					maybeRoute <- DB.get db (DB.byJid routeTo ["direct-message-route"])
+					case (maybeRoute, mapToComponent from) of
+						(Just route, Just componentFrom) | route == strDomain (jidDomain from) ->
 							(sendToComponent . receivedStanza) =<< mapReceivedMessageM (UIO.lift . cacheOOB) (receivedStanzaFromTo componentFrom routeTo stanza)
 						_ | Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to -> do
 							sendToComponent $ stanzaError stanza $
@@ -1605,9 +1582,9 @@ sendToRoom cheoJid room msg = do
 		messagePayloads = [Element (fromString "{jabber:component:accept}body") [] [NodeContent $ ContentText msg]]
 	}]
 
-leaveRoom :: TC.HDB -> JID -> String -> IO [StanzaRec]
+leaveRoom :: DB.DB -> JID -> String -> IO [StanzaRec]
 leaveRoom db cheoJid reason = do
-	existingRoom <- tcGetJID db cheoJid "joined"
+	existingRoom <- (parseJID =<<) <$> DB.get db (DB.byNode cheoJid ["joined"])
 	return $ (flip map) (toList existingRoom) $ \leaveRoom ->
 		mkStanzaRec $ (emptyPresence PresenceUnavailable) {
 			presenceTo = Just leaveRoom,
@@ -1619,9 +1596,9 @@ joinRoom db cheoJid room =
 	rejoinRoom db cheoJid room False
 
 rejoinRoom db cheoJid room rejoin = do
-	password <- maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid (T.unpack (bareTxt room) <> "\0muc_roomsecret"))
+	password <- DB.get db (DB.byNode cheoJid [textToString (bareTxt room), "muc_roomsecret"])
 	let pwEl = maybe [] (\pw -> [
-			NodeElement $ Element (fromString "{http://jabber.org/protocol/muc}password") [] [NodeContent $ ContentText $ fromString pw]
+			NodeElement $ Element (s"{http://jabber.org/protocol/muc}password") [] [NodeContent $ ContentText pw]
 		]) password
 
 	uuid <- fromMaybe "UUIDFAIL" <$> (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
@@ -1665,7 +1642,7 @@ mucShortMatch tel short muc =
 	node = maybe mempty strNode (jidNode =<< parseJID muc)
 
 sendInvite db to (Invite { inviteMUC = room, inviteFrom = from }) = do
-	membersonly <- maybe False toEnum <$> TC.runTCM (TC.get db (T.unpack (bareTxt room) <> "\0muc_membersonly"))
+	membersonly <- fromMaybe False <$> DB.getEnum db (DB.byJid room ["muc_membersonly"])
 	-- Try to add everyone we invite as an owner also
 	(++) <$> (if membersonly then addMUCOwner room from to else return []) <*>
 		return [
@@ -1707,12 +1684,12 @@ registerToGateway componentJid gatewayJid did password = return [
 	]
 
 processSMS db componentJid conferenceServers smsJid cheoJid txt = do
-	nick <- maybe (maybe (formatJID cheoJid) strNode (jidNode cheoJid)) fromString <$> maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "nick")
-	existingRoom <- (parseJID <=< fmap bareTxt) <$> tcGetJID db cheoJid "joined"
+	nick <- fromMaybe (maybe (formatJID cheoJid) strNode (jidNode cheoJid)) <$> DB.get db (DB.byNode cheoJid ["nick"])
+	existingRoom <- (fmap (\jid -> jid { jidResource = Nothing }) . parseJID =<<) <$> DB.get db (DB.byNode cheoJid ["joined"])
 	case parseCommand txt existingRoom nick componentJid of
 		Just JoinInvited -> do
-			invitedRoom <- tcGetJID db cheoJid "invited"
-			let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> fromString "/" <> nick)
+			invitedRoom <- (parseJID =<<) <$> DB.get db (DB.byNode cheoJid ["invited"])
+			let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> s"/" <> nick)
 			case toJoin of
 				Just room ->
 					(++) <$>
@@ -1722,7 +1699,7 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 		Just JoinInvitedWrong
 			| Just room <- existingRoom -> sendToRoom cheoJid room (s"Join")
 			| otherwise -> do
-				invitedRoom <- tcGetJID db cheoJid "invited"
+				invitedRoom <- (parseJID =<<) <$> DB.get db (DB.byNode cheoJid ["invited"])
 				let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> fromString "/" <> nick)
 				case toJoin of
 					Just room ->
@@ -1738,7 +1715,7 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 				return roomCreateStanzas
 		Just (Join room) -> do
 			leaveRoom db cheoJid "Joined a different room."
-			bookmarks <- fmap (fromMaybe [] . (readZ =<<)) (maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "bookmarks"))
+			bookmarks <- DB.smembers db (DB.byNode cheoJid ["bookmarks"])
 			let tel = maybe mempty strNode (jidNode cheoJid)
 			joinRoom db cheoJid $
 				fromMaybe room $ parseJID =<< fmap (<> fromString "/" <> nick)
@@ -1748,7 +1725,7 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 			let f = fst :: (String, Maybe String) -> String
 			let snick = T.unpack nick
 			let room = maybe "" (T.unpack . bareTxt) existingRoom
-			presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db ("presence\0" <> room))
+			presence <- DB.smembers db (DB.Key ["presence", room])
 			let presence' = filter (/= snick) $ map f presence
 			if null presence then
 				return [mkStanzaRec $ mkSMS componentJid smsJid $ fromString $
@@ -1762,15 +1739,14 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 					intercalate ", " presence'
 				]]
 		Just List -> do
-			mbookmarks <- maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "bookmarks")
-			let bookmarks = fromMaybe [] $ readZ =<< mbookmarks
+			bookmarks <- DB.smembers db (DB.byNode cheoJid ["bookmarks"])
 			return [mkStanzaRec $ mkSMS componentJid smsJid $ fromString $ "Groups you can /join\n" <> intercalate "\n" bookmarks]
 		Just (InviteCmd jid)
 			| Just room <- existingRoom ->
 				sendInvite db jid (Invite room cheoJid Nothing Nothing)
 			| otherwise -> return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "You are not joined to a group. Reply with /help to learn more")]
 		Just (SetNick nick) -> do
-			tcPut db cheoJid "nick" (T.unpack nick)
+			DB.set db (DB.byNode cheoJid ["nick"]) nick
 			fmap (concat . toList) $ forM existingRoom $ \room -> do
 				let toJoin = parseJID (bareTxt room <> fromString "/" <> nick)
 				fmap (concat . toList) $ forM toJoin $ joinRoom db cheoJid
@@ -1786,7 +1762,7 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 			| Just room <- existingRoom -> sendToRoom cheoJid room msg
 			| otherwise -> return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "You are not joined to a group")]
 		Just (Debounce time) -> do
-			tcPut db cheoJid "debounce" (show time)
+			DB.set db (DB.byNode cheoJid ["debounce"]) (tshow time)
 			return []
 		Just Help -> return [
 				mkStanzaRec $ mkSMS componentJid smsJid $ fromString $ mconcat [
@@ -1805,23 +1781,19 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 			]
 		Just (AddJid addjid) -> do
 			token <- genToken 100
-			True <- TC.runTCM $ TC.put db (T.unpack (bareTxt addjid) ++ "\0addtoken") (show (formatJID cheoJid, token))
+			DB.set db (DB.byJid addjid ["addtoken"]) (tshow (formatJID cheoJid, token))
 			return $ case parseJID (formatJID componentJid ++ s"/token") of
 				Just sendFrom -> [mkStanzaRec $ mkSMS sendFrom smsJid (s"CHEOGRAM" ++ token)]
 				Nothing -> []
 		Just (DelJid deljid) -> do
 			-- Deleting a JID is much less dangerous since in the worst case SMS just go to the actual phone number
-			TC.runTCM $ TC.out db (T.unpack (bareTxt deljid) ++ "\0cheoJid")
-
-			owners <- (fromMaybe [] . (readZ =<<)) <$>
-				maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "owners")
-			tcPut db cheoJid "owners" (show $ (filter (/= bareTxt deljid)) owners)
+			DB.del db (DB.byJid deljid ["cheoJid"])
+			DB.srem db (DB.byNode cheoJid ["owners"]) [bareTxt deljid]
 
 			return [mkStanzaRec $ mkSMS componentJid smsJid (bareTxt deljid ++ s" removed from your phone number")]
 		Just Jids -> do
-			owners <- (fromMaybe [] . (readZ =<<)) <$>
-				maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "owners")
-			return [mkStanzaRec $ mkSMS componentJid smsJid $ fromString $ "JIDs owning this phone number:\n" <> intercalate "\n" owners]
+			owners <- DB.smembers db (DB.byNode cheoJid ["owners"])
+			return [mkStanzaRec $ mkSMS componentJid smsJid $ s"JIDs owning this phone number:\n" <> intercalate (s"\n") owners]
 		Nothing -> return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "You sent an invalid message")]
 
 syncCall chan req = do
@@ -1865,10 +1837,9 @@ rejoinManager db sendToComponent componentJid toRoomPresences toRejoinManager =
 		mapM_ sendToComponent =<< rejoinRoom db cheoJid mucJid True
 		next $! Map.insert mucJid Rejoining state
 	go state CheckPings = do
-		presenceKeys <- TC.runTCM $ TC.fwmkeys db "presence\0" maxBound
-		(next =<<) $! (\x -> foldM x state (presenceKeys :: [String])) $ \state pkey -> do
-			let Just muc = parseJID =<< T.stripPrefix (fromString "presence\0") (T.pack pkey)
-			presences <- fmap (mapMaybe (ourJids muc) . fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db pkey)
+		(next =<<) $! DB.foldKeysM db (DB.Key ["presence"]) state $ \state pkey@(DB.Key keyparts) -> do
+			let Just muc = parseJID . fromString =<< atZ keyparts 1
+			presences <- mapMaybe (ourJids muc) <$> DB.hgetall db pkey
 			(\x -> foldM x state presences) $ \state (mucJid, cheoJid) ->
 				case Map.lookup mucJid state of
 					Nothing -> do
@@ -1901,41 +1872,29 @@ roomPresences db toRoomPresences =
 	where
 	go (RecordSelfJoin cheoJid from jid) = do
 		-- After a join is done we have a full presence list, remove old ones
-		forM_ (tcKey cheoJid (muc from <> "\0old_presence")) (TC.runTCM . TC.out db)
-		globalAndLocal cheoJid from ((resource from, T.unpack . bareTxt <$> jid):)
+		DB.del db (DB.byNode cheoJid [muc from, "old_presence"])
+		globalAndLocal cheoJid from (\k -> DB.hset db k [(resource from, T.unpack . bareTxt <$> jid)])
 	go (RecordJoin cheoJid from jid) =
-		globalAndLocal cheoJid from ((resource from, T.unpack . bareTxt <$> jid):)
+		globalAndLocal cheoJid from (\k -> DB.hset db k [(resource from, T.unpack . bareTxt <$> jid)])
 	go (RecordPart cheoJid from) = do
-		globalAndLocal cheoJid from (filter ((/=resource from) . fst))
+		globalAndLocal cheoJid from (\k -> DB.hdel db k [fromString $ resource from])
 	go (RecordNickChanged cheoJid from nick) =
-		globalAndLocal cheoJid from $
-			map (first $ \n -> if fromString n == resource from then T.unpack nick else n)
+		globalAndLocal cheoJid from (\k -> DB.hset db k [(resource from, T.unpack nick)])
 	go (Clear cheoJid from) =
-		forM_ (tcKey cheoJid (muc from <> "\0presence")) (TC.runTCM . TC.out db)
+		DB.del db (DB.byNode cheoJid [muc from, "presence"])
 	go (StartRejoin cheoJid from) = do
 		-- Copy current presences to a holding space so we can clear when rejoin is over
-		presences <- (fromMaybe [] . (readZ =<<)) <$>
-			maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid (muc from <> "\0presence"))
-		old_presences <- (fromMaybe [] . (readZ =<<)) <$>
-			maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid (muc from <> "\0old_presence"))
-		tcPut db cheoJid (muc from <> "\0old_presence")
-			(show (presences <> old_presences :: [(String, Maybe String)]))
-		forM_ (tcKey cheoJid (muc from <> "\0presence")) (TC.runTCM . TC.out db)
+		presences <- DB.hgetall db (DB.byNode cheoJid [muc from, "presence"])
+		DB.hset db (DB.byNode cheoJid [muc from, "old_presence"]) (presences :: [(String, Maybe String)])
+		DB.del db (DB.byNode cheoJid [muc from, "presence"])
 	go (GetRoomPresences cheoJid from rtrn) = do
-		presences <- (fromMaybe [] . (readZ =<<)) <$>
-			maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid (muc from <> "\0presence"))
-		old_presences <- (fromMaybe [] . (readZ =<<)) <$>
-			maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid (muc from <> "\0old_presence"))
-		atomically $ putTMVar rtrn $ sort $ nubBy (equating fst) $ presences <> old_presences
+		presences <- DB.hgetall db (DB.byNode cheoJid [muc from, "presence"])
+		old_presences <- DB.hgetall db (DB.byNode cheoJid [muc from, "old_presence"])
+		atomically $ putTMVar rtrn $ presences ++ old_presences
 
 	globalAndLocal cheoJid from f = do
-		modify ("presence\0" <> muc from) f
-		forM_ (tcKey cheoJid (muc from <> "\0presence")) (\k -> modify k f)
-	modify :: String -> ([(String, Maybe String)] -> [(String, Maybe String)]) -> IO ()
-	modify k f = do
-		presence <- fmap (fromMaybe [] . (readZ =<<)) (TC.runTCM $ TC.get db k)
-		True <- TC.runTCM $ TC.put db k $ show $ sort $ nubBy (equating fst) $ f presence
-		return ()
+		f (DB.Key ["presence", muc from])
+		f (DB.byNode cheoJid [muc from, "presence"])
 	muc = T.unpack . bareTxt
 	resource x = fromMaybe "" (T.unpack . strResource <$> jidResource x)
 
@@ -1981,7 +1940,7 @@ joinPartDebouncer db backendHost sendToComponent componentJid toRoomPresences to
 			Just (_, _, j) | j /= join -> return $! Map.delete (cheoJid, from) state -- debounce
 			Just (_, _, _) -> return state -- ignore dupe
 			Nothing -> do
-				expire <- fmap (fromMaybe (-1) . (readZ =<<)) (maybe (return Nothing) (TC.runTCM . TC.get db) (tcKey cheoJid "debounce"))
+				expire <- fmap (fromMaybe (-1) . (readZ . textToString =<<)) (DB.get db (DB.byNode cheoJid ["debounce"]))
 				time <- getCurrentTime
 				if expire < 0 then recordJoinPart cheoJid from mjid join else
 					void $ forkIO $ threadDelay (expire*1000000) >> atomically (writeTChan toJoinPartDebouncer $ DebounceExpire cheoJid from time)
@@ -1999,7 +1958,7 @@ joinPartDebouncer db backendHost sendToComponent componentJid toRoomPresences to
 			(_, state') -> return state'
 
 
-adhocBotManager :: (UIO.Unexceptional m, TC.TCDB db) => db -> JID -> (XMPP.Message -> UIO.UIO ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> (STM XMPP.Message) -> m ()
+adhocBotManager :: (UIO.Unexceptional m) => DB.DB -> JID -> (XMPP.Message -> UIO.UIO ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> (STM XMPP.Message) -> m ()
 adhocBotManager db componentJid sendMessage sendIQ messages = do
 	cleanupChan <- atomicUIO newTChan
 	statefulManager cleanupChan Map.empty
@@ -2020,12 +1979,6 @@ adhocBotManager db componentJid sendMessage sendIQ messages = do
 				let writer = (atomicUIO . writeTChan newChan)
 				return $ Map.insert key writer sessions
 		statefulManager cleanupChan sessions'
-
-openTokyoCabinet :: (TC.TCDB a) => String -> IO a
-openTokyoCabinet pth = TC.runTCM $ do
-	db <- TC.new
-	True <- TC.open db pth [TC.OREADER, TC.OWRITER, TC.OCREAT]
-	return db
 
 data Avatar = Avatar Text Int64 Text
 
@@ -2073,7 +2026,7 @@ main = do
 			(Config.Config componentJid (Config.ServerConfig host port) secret backendHost rawdid registrationJid conferences s5bListenOn (Config.ServerConfig s5bhost s5bport) jingleStore jingleStoreURL redisConnectInfo (Config.ServerConfig statsdHost statsdPort) maybeAvatarPath) <- Dhall.input Dhall.auto (fromString config)
 			log "" "Starting..."
 			let Just did = normalizeTel rawdid
-			db <- openTokyoCabinet "./db.tcdb" :: IO TC.HDB
+			db <- DB.mk "./db.tcdb"
 			redis <- Redis.checkedConnect redisConnectInfo
 			toJoinPartDebouncer <- atomically newTChan
 			sendToComponent <- atomically newTChan
@@ -2108,23 +2061,23 @@ main = do
 			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main (XMPP.jidDomain componentJid)
 				(\userJid ->
 					let userJid' = maybeUnescape userJid in
-					(parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0possible-route"))
+					(parseJID =<<) <$> DB.get db (DB.byJid userJid' ["possible-route"])
 				)
 				(\userJid ->
 					let userJid' = maybeUnescape userJid in
-					(parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0direct-message-route"))
+					(parseJID =<<) <$> DB.get db (DB.byJid userJid' ["direct-message-route"])
 				)
 				(\userJid mgatewayJid -> do
 					let userJid' = maybeUnescape userJid
-					TC.runTCM (TC.out db (T.unpack (bareTxt userJid') ++ "\0possible-route"))
+					DB.del db (DB.byJid userJid' ["possible-route"])
 					case mgatewayJid of
 						Just gatewayJid -> do
-							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0direct-message-route"))
+							maybeExistingRoute <- (parseJID =<<) <$> DB.get db (DB.byJid userJid' ["direct-message-route"])
 							forM_ maybeExistingRoute $ \existingRoute ->
 								when (existingRoute /= gatewayJid)
 									(atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid' existingRoute)
 
-							True <- TC.runTCM $ TC.put db (T.unpack (bareTxt userJid') ++ "\0direct-message-route") (T.unpack $ formatJID gatewayJid)
+							DB.set db (DB.byJid userJid' ["direct-message-route"]) (formatJID gatewayJid)
 
 							forM_ (parseJID $ escapeJid (bareTxt userJid') ++ s"@" ++ formatJID componentJid) $ \from ->
 								forM_ (parseJID $ did ++ s"@" ++ formatJID gatewayJid) $ \to ->
@@ -2133,8 +2086,8 @@ main = do
 
 							return ()
 						Nothing -> do
-							maybeExistingRoute <- (parseJID . fromString =<<) <$> TC.runTCM (TC.get db (T.unpack (bareTxt userJid') ++ "\0direct-message-route"))
-							TC.runTCM $ TC.out db (T.unpack (bareTxt userJid') ++ "\0direct-message-route")
+							maybeExistingRoute <- (parseJID =<<) <$> DB.get db (DB.byJid userJid' ["direct-message-route"])
+							DB.del db (DB.byJid userJid' ["direct-message-route"])
 							forM_ maybeExistingRoute $ \existingRoute ->
 								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid' existingRoute
 				)
