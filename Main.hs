@@ -1267,18 +1267,6 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 
 		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaTo stanza)
 		pushStatsd [StatsD.stat ["stanzas", "out" ++ tags] 1 "c" Nothing]
-
-		case (stanzaFrom stanza, stanzaTo stanza) of
-			(Just from, Just to)
-				| strDomain (jidDomain to) == backendHost,
-				  from == componentJid ->
-					forM_ (tcKey to "welcomed") $ \welcomedKey -> do
-						welcomed <- maybe False toEnum <$> liftIO (TC.runTCM $ TC.get db welcomedKey)
-						unless welcomed $ do
-							putStanza $ mkSMS componentJid to $ fromString "Welcome to CheoGram! You can chat with groups of friends (one at a time), by replying to this number. Reply with /help to learn more or visit cheogram.com"
-							tcPut db to "welcomed" (fromEnum True)
-			_ -> return ()
-
 		putStanza stanza
 
 	recvThread <- forkXMPP $ forever $ flip catchError (log "component read EXCEPTION") $
