@@ -3,6 +3,7 @@ module DB (DB, Key(..), byJid, byNode, mk, get, getEnum, del, set, setEnum, sadd
 import Prelude ()
 import BasicPrelude
 
+import GHC.Stack (HasCallStack)
 import Control.Error (readZ)
 import Network.Protocol.XMPP (JID(..), strNode)
 
@@ -110,7 +111,7 @@ byJid jid subkey = Key $ (textToString $ bareTxt jid) : subkey
 
 -- | Used when we know the JID is @cheogram.com, for example
 --   So usually this is ByTel, really
-byNode :: JID -> [String] -> Key
+byNode :: (HasCallStack) => JID -> [String] -> Key
 byNode (JID { jidNode = Just node }) subkey =
 	Key $ (textToString $ strNode node) : subkey
 byNode jid _ = error $ "JID without node used in byNode: " ++ show jid
