@@ -1,4 +1,4 @@
-module Adhoc(adhocBotSession, commandList, queryCommandList) where
+module Adhoc (adhocBotSession, commandList, queryCommandList) where
 
 import Prelude ()
 import BasicPrelude hiding (log)

@@ -666,7 +666,7 @@ handleRegister db componentJid iq@(IQ { iqFrom = Just from, iqType = IQSet }) qu
 	| [_] <- isNamed (fromString "{jabber:iq:register}remove") =<< elementChildren query = do
 		tel <- fromMaybe mempty <$> DB.get db (DB.byJid from ["registered"])
 		forM_ (telToJid tel (formatJID componentJid)) $ \cheoJid ->
-			DB.del db (DB.byNode cheoJid  ["registered"])
+			DB.del db (DB.byNode cheoJid ["registered"])
 		DB.del db (DB.byJid from ["registered"])
 		return [mkStanzaRec $ iq {
 			iqTo = iqFrom iq,
