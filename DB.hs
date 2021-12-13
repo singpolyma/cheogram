@@ -45,7 +45,8 @@ getEnum db key =
 
 del :: DB -> Key -> IO ()
 del db key = do
-	True <- TC.runTCM $ TC.out (tcdb db) $ tcKey key
+	-- May return false if key is not present, but that's fine
+	void $ TC.runTCM $ TC.out (tcdb db) $ tcKey key
 	return ()
 
 set :: DB -> Key -> Text -> IO ()
