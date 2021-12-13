@@ -368,7 +368,7 @@ componentMessage db componentJid (m@Message { messageType = MessageError }) _ fr
 	toRouteOrFallback db componentJid from smsJid m $ do
 		log "DIRECT FROM GATEWAY" smsJid
 		return [mkStanzaRec $ m { messageTo = Just smsJid, messageFrom = Just componentJid }]
-componentMessage db componentJid m@(Message { messageTo = Just to }) existingRoom _ smsJid _
+componentMessage db componentJid m@(Message { messageTo = Just to@JID{ jidNode = Just _ } }) existingRoom _ smsJid _
 	| Just invite <- getMediatedInvitation m <|> getDirectInvitation m = do
 		forM_ (invitePassword invite) $ \password ->
 			DB.set db (DB.byNode to [textToString $ formatJID $ inviteMUC invite, "muc_roomsecret"]) password
@@ -733,7 +733,7 @@ componentStanza _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
 	  not $ null $ code "104" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
 		queryDisco from to
-componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid }) (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from})) = do
+componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid }) (ReceivedMessage (m@Message { messageTo = Just to@(JID { jidNode = Just _ }), messageFrom = Just from})) = do
 	existingRoom <- (parseJID =<<) <$> DB.get db (DB.byNode to ["joined"])
 	componentMessage db componentJid m existingRoom from smsJid $
 		getBody "jabber:component:accept" m
@@ -752,7 +752,7 @@ componentStanza (ComponentContext { smsJid = (Just smsJid), toRejoinManager, com
 componentStanza (ComponentContext { db, smsJid = (Just smsJid), toRoomPresences, toRejoinManager, toJoinPartDebouncer, componentJid }) (ReceivedPresence (Presence {
 		presenceType = typ,
 		presenceFrom = Just from,
-		presenceTo = Just to,
+		presenceTo = Just to@(JID { jidNode = Just _ }),
 		presencePayloads = payloads
 	})) | typ `elem` [PresenceAvailable, PresenceUnavailable] = do
 		existingRoom <- (parseJID =<<) <$> DB.get db (DB.byNode to ["joined"])
@@ -1583,7 +1583,7 @@ sendToRoom cheoJid room msg = do
 	}]
 
 leaveRoom :: DB.DB -> JID -> String -> IO [StanzaRec]
-leaveRoom db cheoJid reason = do
+leaveRoom db cheoJid@(JID { jidNode = Just _ }) reason = do
 	existingRoom <- (parseJID =<<) <$> DB.get db (DB.byNode cheoJid ["joined"])
 	return $ (flip map) (toList existingRoom) $ \leaveRoom ->
 		mkStanzaRec $ (emptyPresence PresenceUnavailable) {
@@ -1591,11 +1591,14 @@ leaveRoom db cheoJid reason = do
 			presenceFrom = Just cheoJid,
 			presencePayloads = [Element (fromString "{jabber:component:accept}status") [] [NodeContent $ ContentText $ fromString reason]]
 		}
+leaveRoom _ cheoJid reason = do
+	log "ERROR leaveRoom" (cheoJid, reason)
+	return []
 
 joinRoom db cheoJid room =
 	rejoinRoom db cheoJid room False
 
-rejoinRoom db cheoJid room rejoin = do
+rejoinRoom db cheoJid@(JID { jidNode = Just _ }) room rejoin = do
 	password <- DB.get db (DB.byNode cheoJid [textToString (bareTxt room), "muc_roomsecret"])
 	let pwEl = maybe [] (\pw -> [
 			NodeElement $ Element (s"{http://jabber.org/protocol/muc}password") [] [NodeContent $ ContentText pw]
@@ -1610,6 +1613,9 @@ rejoinRoom db cheoJid room rejoin = do
 			NodeElement $ Element (s"{http://jabber.org/protocol/muc}history") [(s"{http://jabber.org/protocol/muc}maxchars", [ContentText $ fromString "0"])] []
 		] <> pwEl)]
 	}]
+rejoinRoom _ cheoJid room rejoin = do
+	log "ERROR rejoinRoom" (cheoJid, room, rejoin)
+	return []
 
 addMUCOwner room from jid = do
 	uuid <- (fmap.fmap) UUID.toString UUID.nextUUID
