@@ -1981,7 +1981,10 @@ adhocBotManager db componentJid sendMessage sendIQ messages = do
 			Just input -> input message >> return sessions
 			Nothing -> do
 				newChan <- atomicUIO newTChan
-				UIO.forkFinally (adhocBotSession db componentJid sendMessage sendIQ (readTChan newChan) message) (\_ -> atomicUIO $ writeTChan cleanupChan key)
+				UIO.forkFinally (adhocBotSession db componentJid sendMessage sendIQ (readTChan newChan) message) (\result -> do
+						fromIO_ $ either (log "adhocBotManager") (const $ return ()) result
+						atomicUIO $ writeTChan cleanupChan key
+					)
 				let writer = (atomicUIO . writeTChan newChan)
 				return $ Map.insert key writer sessions
 		statefulManager cleanupChan sessions'
