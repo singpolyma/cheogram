@@ -8,12 +8,14 @@ import Control.Error (readZ)
 import Network.Protocol.XMPP (JID(..), strNode)
 
 import qualified Database.TokyoCabinet as TC
+import qualified Database.Redis as Redis
 import qualified Data.Text as T
 
 import Util
 
 data DB = DB {
-	tcdb :: TC.HDB
+	tcdb :: TC.HDB,
+	redis :: Redis.Connection
 }
 
 newtype Key = Key [String]
@@ -24,10 +26,11 @@ openTokyoCabinet pth = TC.runTCM $ do
 	True <- TC.open db pth [TC.OREADER, TC.OWRITER, TC.OCREAT]
 	return db
 
-mk :: String -> IO DB
-mk tcPath = do
+mk :: String -> Redis.ConnectInfo -> IO DB
+mk tcPath redisCI = do
 	tcdb <- openTokyoCabinet tcPath
-	return $ DB tcdb
+	redis <- Redis.checkedConnect redisCI
+	return $ DB tcdb redis
 
 tcKey :: Key -> String
 tcKey (Key key) = intercalate "\0" key

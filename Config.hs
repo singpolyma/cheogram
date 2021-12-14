@@ -20,6 +20,11 @@ import qualified RedisURL
 
 data ServerConfig = ServerConfig { host :: Socket.HostName, port :: Socket.PortNumber } deriving (Dhall.Generic, Dhall.FromDhall, Show)
 
+data Redis = Redis {
+	presence :: Redis.ConnectInfo,
+	state :: Redis.ConnectInfo
+} deriving (Dhall.Generic, Dhall.FromDhall, Show)
+
 data Config = Config {
 	componentJid :: XMPP.JID,
 	server :: ServerConfig,
@@ -32,7 +37,7 @@ data Config = Config {
 	s5bAdvertise :: ServerConfig,
 	jingleStore :: FilePath,
 	jingleStoreURL :: Text,
-	redis :: Redis.ConnectInfo,
+	redis :: Redis,
 	statsd :: ServerConfig,
 	avatar :: Maybe FilePath
 } deriving (Dhall.Generic, Dhall.FromDhall, Show)
