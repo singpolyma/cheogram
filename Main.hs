@@ -449,19 +449,19 @@ handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer compon
 		case presences of
 			[] -> do -- No one in the room, so we "created"
 				uuid <- fromMaybe "UUIDFAIL" <$> (fmap.fmap) (fromString . UUID.toString) UUID.nextUUID
-				let fullid = if (T.unpack resourceFrom `elem` map fst presences) then uuid else "CHEOGRAMCREATE%" <> uuid
+				let fullid = if (resourceFrom `elem` map fst presences) then uuid else "CHEOGRAMCREATE%" <> uuid
 				return [mkStanzaRec $ (emptyIQ IQGet) {
 					iqTo = Just room,
 					iqFrom = Just to,
 					iqID = Just $ fromString fullid,
 					iqPayload = Just $ Element (fromString "{http://jabber.org/protocol/muc#owner}query") [] []
 				}]
-			(_:_) | isNothing (lookup (T.unpack resourceFrom) presences) -> do
+			(_:_) | isNothing (lookup resourceFrom presences) -> do
 				fmap ((mkStanzaRec $ mkSMS componentJid smsJid $ mconcat [
-						fromString "* You have joined ", bareMUC,
-						fromString " as ", resourceFrom,
-						fromString " along with\n",
-						fromString $ intercalate ", " (filter (/= T.unpack resourceFrom) $ map fst presences)
+						s"* You have joined ", bareMUC,
+						s" as ", resourceFrom,
+						s" along with\n",
+						intercalate (s", ") (filter (/= resourceFrom) $ map fst presences)
 					]):)
 					(queryDisco room to)
 			_ -> do
@@ -1728,25 +1728,23 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 				(find (mucShortMatch tel (strDomain $ jidDomain room)) bookmarks)
 		Just Leave -> leaveRoom db cheoJid "Typed /leave"
 		Just Who -> do
-			let f = fst :: (String, Maybe String) -> String
-			let snick = T.unpack nick
-			let room = maybe "" (T.unpack . bareTxt) existingRoom
-			presence <- DB.smembers db (DB.Key ["presence", room])
-			let presence' = filter (/= snick) $ map f presence
+			let room = maybe mempty bareTxt existingRoom
+			presence <- DB.hgetall db (DB.Key ["presence", T.unpack room])
+			let presence' = filter (/= nick) $ map fst presence
 			if null presence then
 				return [mkStanzaRec $ mkSMS componentJid smsJid $ fromString $
 						"You are not joined to a group. Reply with /help to learn more"
 					]
 			else
-				return [mkStanzaRec $ mkSMS componentJid smsJid $ fromString $ mconcat $ [
-					"You are joined to ", room,
-					" as ", snick] ++ if null presence' then [] else [
-					" along with\n",
-					intercalate ", " presence'
+				return [mkStanzaRec $ mkSMS componentJid smsJid $ mconcat $ [
+					s"You are joined to ", room,
+					s" as ", nick] ++ if null presence' then [] else [
+					s" along with\n",
+					intercalate (s", ") presence'
 				]]
 		Just List -> do
 			bookmarks <- DB.smembers db (DB.byNode cheoJid ["bookmarks"])
-			return [mkStanzaRec $ mkSMS componentJid smsJid $ fromString $ "Groups you can /join\n" <> intercalate "\n" bookmarks]
+			return [mkStanzaRec $ mkSMS componentJid smsJid $ s"Groups you can /join\n" ++ intercalate (s"\n") bookmarks]
 		Just (InviteCmd jid)
 			| Just room <- existingRoom ->
 				sendInvite db jid (Invite room cheoJid Nothing Nothing)
@@ -1871,7 +1869,7 @@ data RoomPresences =
 	RecordNickChanged JID JID Text |
 	Clear JID JID |
 	StartRejoin JID JID |
-	GetRoomPresences JID JID (TMVar [(String, Maybe String)])
+	GetRoomPresences JID JID (TMVar [(Text, Maybe Text)])
 
 roomPresences db toRoomPresences =
 	forever $ atomically (readTChan toRoomPresences) >>= go
@@ -1879,19 +1877,19 @@ roomPresences db toRoomPresences =
 	go (RecordSelfJoin cheoJid from jid) = do
 		-- After a join is done we have a full presence list, remove old ones
 		DB.del db (DB.byNode cheoJid [muc from, "old_presence"])
-		globalAndLocal cheoJid from (\k -> DB.hset db k [(resource from, T.unpack . bareTxt <$> jid)])
+		globalAndLocal cheoJid from (\k -> DB.hset db k [(resource from, bareTxt <$> jid)])
 	go (RecordJoin cheoJid from jid) =
-		globalAndLocal cheoJid from (\k -> DB.hset db k [(resource from, T.unpack . bareTxt <$> jid)])
+		globalAndLocal cheoJid from (\k -> DB.hset db k [(resource from, bareTxt <$> jid)])
 	go (RecordPart cheoJid from) = do
-		globalAndLocal cheoJid from (\k -> DB.hdel db k [fromString $ resource from])
+		globalAndLocal cheoJid from (\k -> DB.hdel db k [resource from])
 	go (RecordNickChanged cheoJid from nick) =
-		globalAndLocal cheoJid from (\k -> DB.hset db k [(resource from, T.unpack nick)])
+		globalAndLocal cheoJid from (\k -> DB.hset db k [(resource from, Just nick)])
 	go (Clear cheoJid from) =
 		DB.del db (DB.byNode cheoJid [muc from, "presence"])
 	go (StartRejoin cheoJid from) = do
 		-- Copy current presences to a holding space so we can clear when rejoin is over
 		presences <- DB.hgetall db (DB.byNode cheoJid [muc from, "presence"])
-		DB.hset db (DB.byNode cheoJid [muc from, "old_presence"]) (presences :: [(String, Maybe String)])
+		DB.hset db (DB.byNode cheoJid [muc from, "old_presence"]) presences
 		DB.del db (DB.byNode cheoJid [muc from, "presence"])
 	go (GetRoomPresences cheoJid from rtrn) = do
 		presences <- DB.hgetall db (DB.byNode cheoJid [muc from, "presence"])
@@ -1902,7 +1900,7 @@ roomPresences db toRoomPresences =
 		f (DB.Key ["presence", muc from])
 		f (DB.byNode cheoJid [muc from, "presence"])
 	muc = T.unpack . bareTxt
-	resource x = fromMaybe "" (T.unpack . strResource <$> jidResource x)
+	resource x = fromMaybe mempty (strResource <$> jidResource x)
 
 data JoinPartDebounce = DebounceJoin JID JID (Maybe JID) | DebouncePart JID JID | DebounceExpire JID JID UTCTime deriving (Show)
 
@@ -1931,7 +1929,7 @@ joinPartDebouncer db backendHost sendToComponent componentJid toRoomPresences to
 		let nick = fromMaybe mempty (strResource <$> jidResource from)
 		presences <- syncCall toRoomPresences $ GetRoomPresences cheoJid from
 		now <- getCurrentTime
-		when (isNothing $ lookup (T.unpack nick) presences) $ do
+		when (isNothing $ lookup nick presences) $ do
 			atomically $ writeTChan toRoomPresences $ RecordJoin cheoJid from mjid
 			sendToComponent $ mkStanzaRec $ mkSMS componentJid smsJid $ mconcat [
 					fromString "* ",
