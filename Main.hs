@@ -11,7 +11,7 @@ import Data.Traversable (forM, mapM)
 import System.Environment (getArgs)
 import Control.Error (readZ, MaybeT(..), hoistMaybe, headZ, justZ, hush, atZ)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
-import Network (PortID(PortNumber))
+import Network.Socket (PortNumber)
 import Network.URI (parseURI, uriPath, escapeURIString)
 import System.Random (Random(randomR), getStdRandom)
 import System.Random.Shuffle (shuffleM)
@@ -2026,7 +2026,7 @@ main = do
 			log "" "Registering..."
 			let Just componentJid = parseJID (fromString componentHost)
 			let Just gatewayJid = parseJID (fromString backendHost)
-			void $ runComponent (Server componentJid host (PortNumber $ read port)) (fromString secret) $ do
+			void $ runComponent (Server componentJid host (read port)) (fromString secret) $ do
 				mapM_ putStanza =<< registerToGateway componentJid gatewayJid (fromString did) (fromString password)
 				liftIO $ threadDelay 1000000
 		[config] -> do
@@ -2158,6 +2158,6 @@ main = do
 
 			log "" "runComponent STARTING"
 
-			log "runComponent ENDED" =<< runComponent (Server componentJid host (PortNumber port)) secret
+			log "runComponent ENDED" =<< runComponent (Server componentJid host port) secret
 				(component db presenceRedis (UIO.lift . pushStatsd) backendHost did maybeAvatar (cacheOOB (UIO.lift . pushStatsd) jingleStore jingleStoreURL) sendIQ iqReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
