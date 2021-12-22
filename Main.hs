@@ -421,7 +421,7 @@ componentMessage db componentJid m@(Message { messageTo = Just to }) existingRoo
 				}]
 			Nothing -> do
 				nick <- nickFor db from existingRoom
-				let txt = mconcat [fromString "(", nick, fromString " whispers) ", strippedBody]
+				let txt = mconcat [s"<", nick, s" says> ", strippedBody]
 				return [mkStanzaRec $ mkSMS componentJid smsJid txt]
 	where
 	strippedM = mapBody (const strippedBody) m
