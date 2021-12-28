@@ -1373,6 +1373,15 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 					case (maybeRoute, mapToComponent from) of
 						(Just route, Just componentFrom) | route == strDomain (jidDomain from) ->
 							(sendToComponent . receivedStanza) =<< mapReceivedMessageM (UIO.lift . cacheOOB) (receivedStanzaFromTo componentFrom routeTo stanza)
+						(Just route, _) -- Alphanumeric senders
+							| route == strDomain (jidDomain from),
+							  Just localpart <- strNode <$> jidNode from,
+							  Nothing <- T.find (\c -> not ((isAlphaNum c || c == ' ') && isAscii c)) localpart ->
+								let
+									localpart' = T.concatMap (\c -> tshow (ord c - 30)) localpart ++ s";phone-context=alphanumeric.phone-context.soprani.ca"
+									Just componentFrom = parseJID (localpart' ++ s"@" ++ formatJID componentJid)
+								in
+								(sendToComponent . receivedStanza) =<< mapReceivedMessageM (fmap (addNickname localpart) . UIO.lift . cacheOOB) (receivedStanzaFromTo componentFrom routeTo stanza)
 						_ | Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to -> do
 							sendToComponent $ stanzaError stanza $
 								Element (fromString "{jabber:component:accept}error")

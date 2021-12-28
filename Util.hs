@@ -247,6 +247,16 @@ forkFinallyXMPP kid handler = do
 mkElement :: XML.Name -> Text -> XML.Element
 mkElement name txt = XML.Element name [] [XML.NodeContent $ XML.ContentText txt]
 
+nickname :: Text -> XML.Element
+nickname nick = XML.Element (s"{http://jabber.org/protocol/nick}nick") [] [
+		XML.NodeContent $ XML.ContentText nick
+	]
+
+addNickname :: Text -> XMPP.Message -> XMPP.Message
+addNickname nick m@(XMPP.Message { XMPP.messagePayloads = p }) = m {
+		XMPP.messagePayloads = (nickname nick) : p
+	}
+
 mapReceivedMessageM :: (Applicative f) =>
 	  (XMPP.Message -> f XMPP.Message)
 	-> XMPP.ReceivedStanza
