@@ -1246,7 +1246,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 
 		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaTo stanza)
 		pushStatsd [StatsD.stat ["stanzas", "out" ++ tags] 1 "c" Nothing]
-		putStanza stanza
+		putStanza =<< (liftIO . ensureId) stanza
 
 	recvThread <- forkXMPP $ forever $ flip catchError (log "component read EXCEPTION") $
 		(atomicUIO . writeTChan toStanzaProcessor) =<< getStanza
