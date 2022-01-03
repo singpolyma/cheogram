@@ -1142,8 +1142,10 @@ componentStanza (ComponentContext { db, componentJid, sendIQ }) (ReceivedIQ (IQ 
 	| [query] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
 		let vars = mapMaybe (attributeText (fromString "var")) $
 			isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query
-		let muc_membersonly = s"muc_membersonly" `elem` vars
-		DB.setEnum db (DB.byJid from ["muc_membersonly"]) muc_membersonly
+		if s"muc_membersonly" `elem` vars then
+			DB.setEnum db (DB.byJid from ["muc_membersonly"]) True
+		else
+			DB.del db (DB.byJid from ["muc_membersonly"])
 		return []
 componentStanza _ (ReceivedIQ (iq@IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqPayload = Just p }))
 	| not $ null $ isNamed (fromString "{urn:xmpp:ping}ping") p = do
