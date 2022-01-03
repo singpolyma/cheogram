@@ -1144,12 +1144,7 @@ componentStanza (ComponentContext { db, componentJid, sendIQ }) (ReceivedIQ (IQ 
 			isNamed (fromString "{http://jabber.org/protocol/disco#info}feature") =<< elementChildren query
 		let muc_membersonly = s"muc_membersonly" `elem` vars
 		DB.setEnum db (DB.byJid from ["muc_membersonly"]) muc_membersonly
-		if (fmap strResource (jidResource to) == Just (fromString "create")) then do
-			regJid <- (parseJID =<<) <$> DB.get db (DB.byNode to ["registered"])
-			fmap (concat . toList) $ forM ((,) <$> regJid <*> parseJID (bareTxt to)) $ \(jid, to) ->
-				sendInvite db jid (Invite from to Nothing Nothing)
-		else
-			return []
+		return []
 componentStanza _ (ReceivedIQ (iq@IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqPayload = Just p }))
 	| not $ null $ isNamed (fromString "{urn:xmpp:ping}ping") p = do
 		return [mkStanzaRec $ iq {
