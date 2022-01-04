@@ -2,6 +2,7 @@ image: debian/buster
 sources:
 - https://git.sr.ht/~singpolyma/cheogram
 - https://git.sr.ht/~singpolyma/jingle-xmpp
+- https://github.com/int-e/hstatsd#6415e484a2680eef41a8986dc3197b6dae377ba4
 packages:
 - ghc
 - cabal-install
@@ -25,6 +26,9 @@ tasks:
 - dependencies: |
     cd jingle-xmpp
     cabal install --constraint="random <= 1.1" --constraint="attoparsec < 0.14" --constraint="memory < 0.16" --constraint="transformers-compat < 0.7" --constraint="aeson < 1.6" --constraint="hashable < 1.4"
+    cd ..
+    cd hstatsd
+    cabal install
     cd ..
     cd cheogram
     cabal install --enable-tests --only-dependencies
