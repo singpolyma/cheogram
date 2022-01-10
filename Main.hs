@@ -2039,7 +2039,7 @@ main = do
 			(Config.Config componentJid (Config.ServerConfig host port) secret backendHost rawdid registrationJid conferences s5bListenOn (Config.ServerConfig s5bhost s5bport) jingleStore jingleStoreURL (Config.Redis presenceRCI stateRCI) (Config.ServerConfig statsdHost statsdPort) maybeAvatarPath) <- Dhall.input Dhall.auto (fromString config)
 			log "" "Starting..."
 			let Just did = normalizeTel rawdid
-			db <- DB.mk "./db.tcdb" stateRCI
+			db <- DB.mk stateRCI
 			presenceRedis <- Redis.checkedConnect presenceRCI
 			toJoinPartDebouncer <- atomically newTChan
 			sendToComponent <- atomically newTChan
