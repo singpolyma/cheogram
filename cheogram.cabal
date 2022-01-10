@@ -41,7 +41,7 @@ executable cheogram
                 HostAndPort,
                 HTTP,
                 http-types,
-                http-streams < 0.8.6.1,
+                http-streams,
                 hstatsd,
                 io-streams,
                 jingle,
@@ -58,14 +58,12 @@ executable cheogram
                 stm-delay,
                 text,
                 time,
-                tokyocabinet-haskell,
                 uuid,
                 unexceptionalio,
                 unexceptionalio-trans,
                 utility-ht,
                 xml-types,
-                -- temporary fix for https://github.com/Gabriel439/Haskell-MMorph-Library/issues/54
-                mmorph < 1.1.4
+                mmorph
 
 source-repository head
         type:     git
