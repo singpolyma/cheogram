@@ -2047,64 +2047,6 @@ main = do
 			toRoomPresences <- atomically newTChan
 			toRejoinManager <- atomically newTChan
 
-			log "REWRITE" "DB rewrite..."
-			DB.foldKeysM db (DB.Key []) 0 $ \n k@(DB.Key s) -> (print (n, s) >>) $ (>> return (n+1)) $ case k of
-				DB.Key [_, "muc_membersonly"] -> do
-					mvalue <- DB.getEnum db k
-					forM_ mvalue $ \value -> if value then
-						DB.setEnum db k value
-					else
-						DB.del db k
-				DB.Key [_, _, "muc_roomsecret"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "invited"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "joined"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "registration_code"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "registered"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "nick"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "sip-proxy"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "possible-route"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "cheoJid"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "debounce"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "addtoken"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "direct-message-route"] ->
-					DB.get db k >>= mapM_ (DB.set db k)
-				DB.Key [_, "bookmarks"] ->
-					DB.smembers db k >>= DB.sadd db k
-				DB.Key [_, "owners"] ->
-					DB.smembers db k >>= DB.sadd db k
-				DB.Key [_, _, "old_presence"] -> do
-					value <- DB.hgetall db k
-					if null value then
-						DB.del db k
-					else
-						DB.hset db k value
-				DB.Key [_, _, "presence"] -> do
-					value <- DB.hgetall db k
-					if null value then
-						DB.del db k
-					else
-						DB.hset db k value
-				DB.Key ["presence", _] -> do
-					value <- DB.hgetall db k
-					if null value then
-						DB.del db k
-					else
-						DB.hset db k value
-				DB.Key k' -> log "REWRITE DUNNO" k'
-
-			log "REWRITE" "DB rewrite complete"
-
 			statsd <- openStatsD statsdHost (show statsdPort) ["cheogram"]
 
 			(sendIQ, iqReceiver) <- iqManager $ atomicUIO . writeTChan sendToComponent . mkStanzaRec
