@@ -85,6 +85,7 @@ setEnum db key val = do
 	return ()
 
 sadd :: (HasCallStack) => DB -> Key -> [Text] -> IO ()
+sadd _ _ [] = return ()
 sadd db key new = do
 	void $ runRedisChecked db $ Redis.sadd (redisKey key) (map encodeUtf8 new)
 	existing <- (fromMaybe [] . (readZ =<<)) <$>
@@ -121,6 +122,7 @@ readRedisMaybe bytes
 	| otherwise = Just $ T.decodeUtf8 bytes
 
 hset :: (HasCallStack) => DB -> Key -> [(Text, Maybe Text)] -> IO ()
+hset _ _ [] = return ()
 hset db key newitems = do
 	void $ runRedisChecked db (Redis.hmset (redisKey key) (map (encodeUtf8 *** redisMaybe) newitems))
 	items <- (fromMaybe [] . (readZ =<<)) <$>
