@@ -1,0 +1,30 @@
+image: guix
+packages:
+- plzip
+sources:
+- https://git.sr.ht/~singpolyma/cheogram
+secrets:
+- 9ded4157-4cf9-42ae-b7d0-55eb6e52ea37
+- fd52c9ce-04e8-4684-af6c-1ab78d2e124a
+artifacts:
+- cheogram.scm
+- cheogram.nar.lz
+tasks:
+- bake: |
+    printf "(define-module (cheogram))\n" >> cheogram.scm
+    sed '/^;;;;$/q' cheogram/guix.scm >> cheogram.scm
+    printf "(define-public cheogram\n\t" >> cheogram.scm
+    cd cheogram
+    printf '(load "%s/guix.scm")\n(write cheogram-baked)\n' "$(pwd)" | guix repl /dev/stdin >> ../cheogram.scm
+    cd -
+    printf ")\n" >> cheogram.scm
+    rm -rf cheogram
+- build: |
+    guix build --no-grafts -L. cheogram
+- archive: |
+    sudo mv signing-key.pub /etc/guix/
+    sudo mv signing-key.sec /etc/guix/
+    sudo chown root:root /etc/guix/signing-key.sec
+    sudo chmod 0400 /etc/guix/signing-key.sec
+    guix archive --export -r --no-grafts -L. cheogram > cheogram.nar
+    plzip cheogram.nar

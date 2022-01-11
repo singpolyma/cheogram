@@ -648,7 +648,7 @@
        (sha256
         (base32
          ,(read-line (open-pipe* OPEN_READ "guix" "hash" "-rx" %source-dir))))))
-    (build-system haskell-build-system)
+    (build-system 'haskell-build-system)
     (inputs
       '(list
         dhall
@@ -684,7 +684,7 @@
     (home-page "https://git.singpolyma.net/cheogram")
     (synopsis "")
     (description "")
-    (license license:agpl3)))
+    (license 'license:agpl3)))
 
 ; Baked version of jmp-pay-template with leaves eval'd
 (define-public cheogram-baked
