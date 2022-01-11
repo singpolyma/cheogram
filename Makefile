@@ -1,4 +1,4 @@
-GHCFLAGS=-Wall -Wno-tabs -Wno-orphans -Wno-name-shadowing -XHaskell2010 -O2 -threaded
+GHCFLAGS=-Wall -Wno-tabs -Wno-orphans -Wno-name-shadowing -XHaskell2010 -O -threaded
 HLINTFLAGS=-XHaskell2010 -XCPP -i 'Use camelCase' -i 'Use String' -i 'Use head' -i 'Use string literal' -i 'Use list comprehension'
 
 .PHONY: all shell clean
@@ -6,7 +6,7 @@ HLINTFLAGS=-XHaskell2010 -XCPP -i 'Use camelCase' -i 'Use String' -i 'Use head' 
 all: report.html cheogram
 
 cheogram: Main.hs Adhoc.hs Config.hs ConfigureDirectMessageRoute.hs DB.hs IQManager.hs RedisURL.hs StanzaRec.hs UniquePrefix.hs Util.hs
-	ghc -dynamic -package monads-tf -o cheogram Main.hs
+	ghc -dynamic -package monads-tf -o cheogram $GHCFLAGS Main.hs
 
 report.html: Main.hs Adhoc.hs Config.hs ConfigureDirectMessageRoute.hs DB.hs IQManager.hs RedisURL.hs StanzaRec.hs UniquePrefix.hs Util.hs
 	-hlint $(HLINTFLAGS) --report $^
