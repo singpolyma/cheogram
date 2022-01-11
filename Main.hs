@@ -2048,7 +2048,7 @@ main = do
 			toRejoinManager <- atomically newTChan
 
 			log "REWRITE" "DB rewrite..."
-			DB.foldKeysM db (DB.Key []) () $ \_ k -> (>> return ()) $ case k of
+			DB.foldKeysM db (DB.Key []) 0 $ \n k@(DB.Key s) -> (print (n, s) >>) $ (>> return (n+1)) $ case k of
 				DB.Key [_, "muc_membersonly"] -> do
 					mvalue <- DB.getEnum db k
 					forM_ mvalue $ \value -> if value then

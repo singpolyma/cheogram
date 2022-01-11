@@ -152,15 +152,7 @@ hgetall db key = do
 foldKeysM :: (HasCallStack) => DB -> Key -> b -> (b -> Key -> IO b) -> IO b
 foldKeysM db (Key prefix) z f = do
 	keys <- map tcParseKey <$> TC.runTCM (TC.fwmkeys (tcdb db) (tcKey $ Key $ prefix ++ [""]) maxBound)
-	z' <- foldM f z (keys :: [Key])
-	go keys Redis.cursor0 z'
-	where
-	pattern = redisKey $ Key $ prefix ++ ["*"]
-	go skipKeys cursor acc = do
-		(cursor', keys) <- runRedisChecked db $ Redis.scanOpts cursor (Redis.ScanOpts (Just pattern) (Just 100))
-		acc' <- foldM f acc $ filter (`notElem` skipKeys) $ map redisParseKey keys
-		if cursor' == Redis.cursor0 then return acc' else
-			go skipKeys cursor' acc'
+	foldM f z (keys :: [Key])
 
 byJid :: JID -> [String] -> Key
 byJid jid subkey = Key $ (textToString $ bareTxt jid) : subkey
