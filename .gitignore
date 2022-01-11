@@ -1,2 +1,5 @@
 dist/
 report.html
+cheogram
+*.o
+*.hi
