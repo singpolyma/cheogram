@@ -666,9 +666,11 @@
         ghc-http-streams
         ghc-http-types
         ghc-jingle
+        ghc-magic
         ghc-mmorph
         ghc-monad-loops
         ghc-monads-tf
+        ghc-mime-types
         ghc-network
         ghc-network-protocol-xmpp
         ghc-network-uri

@@ -18,6 +18,8 @@ import System.Random.Shuffle (shuffleM)
 import Data.Digest.Pure.SHA (sha1, bytestringDigest, showDigest)
 import Network.StatsD (openStatsD)
 import qualified Network.StatsD as StatsD
+import Magic (Magic, MagicFlag(MagicMimeType), magicOpen, magicLoadDefault, magicFile)
+import Network.Mime (defaultMimeMap)
 
 import "monads-tf" Control.Monad.Error (catchError) -- ick
 import Data.XML.Types as XML (Element(..), Node(NodeContent, NodeElement), Content(ContentText), isNamed, hasAttributeText, elementText, elementChildren, attributeText, attributeContent, hasAttribute, nameNamespace)
@@ -30,6 +32,7 @@ import qualified Data.CaseInsensitive as CI
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Map as Map
+import qualified Data.Map.Strict as SMap
 import qualified Data.UUID as UUID ( toString )
 import qualified Data.UUID.V1 as UUID ( nextUUID )
 import qualified Data.ByteString.Lazy as LZ
@@ -52,6 +55,11 @@ import StanzaRec
 
 instance Ord JID where
 	compare x y = compare (show x) (show y)
+
+mimeToExtMap :: SMap.Map String Text
+mimeToExtMap = SMap.fromList $ map (\(ext, mimeBytes) ->
+		(textToString (decodeUtf8 mimeBytes), ext)
+	) $ SMap.toList defaultMimeMap
 
 queryDisco to from = (:[]) . mkStanzaRec <$> queryDiscoWithNode Nothing to from
 
@@ -1193,8 +1201,8 @@ cacheHTTP jingleStore url =
 		else
 			return $ Left $ userError "Response was not 200 OK"
 
-cacheOneOOB :: (Unexceptional m) => ([StatsD.Stat] -> m ()) -> FilePath -> Text -> XML.Element -> m (Maybe (Text, Text), XML.Element)
-cacheOneOOB pushStatsd jingleStore jingleStoreURL oob
+cacheOneOOB :: (Unexceptional m) => Magic -> ([StatsD.Stat] -> m ()) -> FilePath -> Text -> XML.Element -> m (Maybe (Text, Text), XML.Element)
+cacheOneOOB magic pushStatsd jingleStore jingleStoreURL oob
 	| [url] <- (mconcat . XML.elementText) <$> urls = do
 		cacheResult <- cacheHTTP jingleStore url
 		case cacheResult of
@@ -1202,21 +1210,19 @@ cacheOneOOB pushStatsd jingleStore jingleStoreURL oob
 				pushStatsd [StatsD.stat ["cache", "oob", "failure"] 1 "c" Nothing]
 				log "cacheOneOOB" err
 				return (Nothing, oob)
-			Right path ->
-				pushStatsd [StatsD.stat ["cache", "oob", "success"] 1 "c" Nothing] >>
-				let
-					ext = T.takeWhileEnd (\c -> c /= '.' && c /= '/') url
-					extSuffix = if T.length ext <= 4 then s"." ++ ext else mempty
-					url' = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) ++ extSuffix
-				in
+			Right path -> do
+				pushStatsd [StatsD.stat ["cache", "oob", "success"] 1 "c" Nothing]
+				mimeType <- fromIO_ $ magicFile magic path
+				let extSuffix = maybe mempty (s"." ++) $ SMap.lookup mimeType mimeToExtMap
+				let url' = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) ++ extSuffix
 				return (
-					Just (url, url'),
-					oob {
-						XML.elementNodes =
-							map XML.NodeElement
-							(mkElement urlName url' : rest)
-					}
-				)
+						Just (url, url'),
+						oob {
+							XML.elementNodes =
+								map XML.NodeElement
+								(mkElement urlName url' : rest)
+						}
+					)
 	| otherwise = do
 		log "cacheOneOOB MALFORMED" oob
 		return (Nothing, oob)
@@ -1224,9 +1230,9 @@ cacheOneOOB pushStatsd jingleStore jingleStoreURL oob
 	urlName = s"{jabber:x:oob}url"
 	(urls, rest) = partition (\el -> XML.elementName el == urlName) (elementChildren oob)
 
-cacheOOB :: (Unexceptional m) => ([StatsD.Stat] -> m ()) -> FilePath -> Text -> XMPP.Message -> m XMPP.Message
-cacheOOB pushStatsd jingleStore jingleStoreURL m@(XMPP.Message { XMPP.messagePayloads = payloads }) = do
-	(replacements, oobs') <- unzip <$> mapM (cacheOneOOB pushStatsd jingleStore jingleStoreURL) oobs
+cacheOOB :: (Unexceptional m) => Magic -> ([StatsD.Stat] -> m ()) -> FilePath -> Text -> XMPP.Message -> m XMPP.Message
+cacheOOB magic pushStatsd jingleStore jingleStoreURL m@(XMPP.Message { XMPP.messagePayloads = payloads }) = do
+	(replacements, oobs') <- unzip <$> mapM (cacheOneOOB magic pushStatsd jingleStore jingleStoreURL) oobs
 	let body' =
 		(mkElement bodyName .: foldl (\body (a, b) -> T.replace a b body)) <$>
 		(map (mconcat . XML.elementText) body) <*> pure (catMaybes replacements)
@@ -2026,6 +2032,9 @@ main = do
 	hSetBuffering stdout LineBuffering
 	hSetBuffering stderr LineBuffering
 
+	magic <- magicOpen [MagicMimeType]
+	magicLoadDefault magic
+
 	args <- getArgs
 	case args of
 		("register":componentHost:host:port:secret:backendHost:did:password:[]) -> do
@@ -2165,5 +2174,5 @@ main = do
 			log "" "runComponent STARTING"
 
 			log "runComponent ENDED" =<< runComponent (Server componentJid host port) secret
-				(component db presenceRedis (UIO.lift . pushStatsd) backendHost did maybeAvatar (cacheOOB (UIO.lift . pushStatsd) jingleStore jingleStoreURL) sendIQ iqReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
+				(component db presenceRedis (UIO.lift . pushStatsd) backendHost did maybeAvatar (cacheOOB magic (UIO.lift . pushStatsd) jingleStore jingleStoreURL) sendIQ iqReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
