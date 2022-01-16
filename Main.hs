@@ -2119,8 +2119,10 @@ main = do
 				(\iq@(IQ { iqPayload = Just jingle }) path ->
 					forM_ (isNamed (s"{urn:xmpp:jingle:1}content") =<< elementChildren jingle) $ \content -> do
 					let fileDesc = mfilter (/=mempty) $ fmap (mconcat . elementText) $ headZ (isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}desc") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}file") =<< elementChildren =<< isNamed (s"{urn:xmpp:jingle:apps:file-transfer:5}description") =<< elementChildren content)
+					mimeType <- fromIO_ $ magicFile magic path
+					let extSuffix = maybe mempty (s"." ++) $ SMap.lookup mimeType mimeToExtMap
 					atomicUIO $ writeTChan toStanzaProcessor $
-						let url = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) in
+						let url = jingleStoreURL ++ (T.takeWhileEnd (/='/') $ fromString path) ++ extSuffix in
 						ReceivedMessage $ (emptyMessage MessageNormal) {
 							messageFrom = iqFrom iq,
 							messageTo = iqTo iq,
