@@ -18,9 +18,11 @@ tasks:
     printf '(load "%s/guix.scm")\n(write cheogram-baked)\n' "$(pwd)" | guix repl /dev/stdin >> ../cheogram.scm
     cd -
     printf ")\n" >> cheogram.scm
-    rm -rf cheogram
+    rm -f cheogram/guix.scm
+    [ "$BUILD_REASON" = patchset ] || rm -rf cheogram
 - build: |
-    guix build --no-grafts -L. cheogram
+    if [ "$BUILD_REASON" = patchset ]; then with_source="--with-source=$PWD/cheogram"; fi
+    guix build $with_source --no-grafts -L. cheogram
 - archive: |
     sudo mv signing-key.pub /etc/guix/
     sudo mv signing-key.sec /etc/guix/
