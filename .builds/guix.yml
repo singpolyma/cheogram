@@ -22,7 +22,7 @@ tasks:
     [ "$BUILD_REASON" = patchset ] || rm -rf cheogram
 - build: |
     if [ "$BUILD_REASON" = patchset ]; then with_source="--with-source=$PWD/cheogram"; fi
-    guix build $with_source --no-grafts -L. cheogram
+    guix build $with_source --no-grafts -r out -L. cheogram
 - archive: |
     if [ -e signing-key.sec ]; then
       sudo mv signing-key.pub /etc/guix/
@@ -30,5 +30,5 @@ tasks:
       sudo chown root:root /etc/guix/signing-key.sec
       sudo chmod 0400 /etc/guix/signing-key.sec
     fi
-    guix archive --export -r --no-grafts -L. cheogram > cheogram.nar
+    guix archive --export -r --no-grafts $(readlink -f out-*) > cheogram.nar
     plzip cheogram.nar
