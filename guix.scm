@@ -688,7 +688,7 @@
     (description "")
     (license 'license:agpl3)))
 
-; Baked version of jmp-pay-template with leaves eval'd
+; Baked version of cheogram-template with leaves eval'd
 (define-public cheogram-baked
  (cons
   (car cheogram-template)
