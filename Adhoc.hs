@@ -213,29 +213,39 @@ adhocBotAnswerListMulti sendText getMessage field = do
 	parser = Atto.skipMany Atto.space *> Atto.sepBy Atto.decimal (Atto.skipMany $ Atto.choice [Atto.space, Atto.char ',']) <* Atto.skipMany Atto.space <* Atto.endOfInput
 	helperText = s"I didn't understand your answer. Please send the numbers you want, separated by commas or spaces like \"1, 3\" or \"1 3\". Blank (or just spaces) to pick nothing."
 
+-- Technically an option can have multiple values, but in practice it probably won't
+data ListSingle = ListSingle { listLabel :: T.Text, listIsOpen :: Bool, listLookup :: (Int -> Maybe [T.Text]) }
+listSingleHelper :: Element -> ListSingle
+listSingleHelper field = ListSingle label open lookup
+	where
+	open = isOpenValidation (fieldValidation field)
+	options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
+	currentValue = listToMaybe $ elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren field
+	optionsText = fmap (listOptionText currentValue (s" [Current Value]")) options
+	currentValueText = (\func -> maybe [] func currentValue) $ \value ->
+		if open && value `notElem` (map (mconcat . fieldValue . snd) options) then
+			[s"[Current Value: " ++ value ++ s"]"]
+		else
+			[]
+	label = unlines $ [formatLabel (const Nothing) field] ++ optionsText ++ currentValueText
+	lookup n = fmap (fieldValue . snd) $ find (\(x, _) -> x == n) options
+
 adhocBotAnswerListSingle :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m [Element]
 adhocBotAnswerListSingle sendText getMessage field = do
 	case attributeText (s"var") field of
 		Just var -> do
-			let open = isOpenValidation (fieldValidation field)
-			let options = zip [1..] $ isNamed(s"{jabber:x:data}option") =<< elementChildren field
-			let currentValue = listToMaybe $ elementText =<< isNamed(s"{jabber:x:data}value") =<< elementChildren field
-			let optionsText = fmap (listOptionText currentValue (s" [Current Value]")) options
-			let currentValueText = fromMaybe (s"") $ currentValue >>= \value ->
-				if open && value `notElem` (map (mconcat . fieldValue . snd) options) then
-					Just $ s"[Current Value: " ++ value ++ s"]\n"
-				else
-					Nothing
+			let list = listSingleHelper field
+			let open = listIsOpen list
 			let prompt = s"Please enter a number from the list above" ++ if open then s", or enter a custom option" else s""
-			sendText $ unlines $ [formatLabel (const Nothing) field] ++ optionsText ++ [currentValueText ++ prompt]
+			sendText $ listLabel list ++ prompt
 			maybeOption <- if open then do
 					value <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly openParser)
 					return $ case value of
 						Left openValue -> Just [openValue]
-						Right itemNumber -> fmap (fieldValue . snd) $ find (\(x, _) -> x == itemNumber) options
+						Right itemNumber -> listLookup list itemNumber
 				else do
 					value <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly parser)
-					return $ fmap (fieldValue . snd) $ find (\(x, _) -> x == value) options
+					return $ listLookup list value
 			case maybeOption of
 				Just option -> return [Element (s"{jabber:x:data}field") [(s"var", [ContentText var])] [
 						NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ mconcat option]
