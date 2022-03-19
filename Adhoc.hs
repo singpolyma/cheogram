@@ -309,6 +309,20 @@ formatItem reportedVars item = intercalate (s"\t") $ map (\var ->
 		) fields
 	fields = filter isField $ elementChildren item
 
+formatResultField :: Element -> Text
+formatResultField el = case maybe ("text-single") T.unpack $ attributeText (s"type") el of
+	"hidden" -> mempty
+	"list-single" -> listLabel $ listSingleHelper el
+	"fixed" -> concat [label, s":\n", unlines (fieldValue el)]
+	"jid-single" -> concat [
+		label,
+		s": ",
+		(unlines $ (s"xmpp:" ++) <$> (fieldValue el))
+		]
+	_ -> concat [label, s": ", unlines (fieldValue el)]
+	where
+	label = formatLabel (const Nothing) el
+
 renderResultForm :: Element -> Text
 renderResultForm form =
 	intercalate (s"\n") $ catMaybes $ snd $
@@ -316,11 +330,7 @@ renderResultForm form =
 		HT.select (reportedVars, Nothing) $ map (second $ second Just) [
 			(isInstructions el, (reportedVars,
 				mconcat $ elementText el)),
-			(isField el && attributeText (s"type") el == Just (s"hidden"), (reportedVars,
-				mempty)),
-			(isField el, (reportedVars,
-				formatLabel (const Nothing) el ++ s": " ++
-				unlines (fieldValue el))),
+			(isField el, (reportedVars, formatResultField el)),
 			(isReported el,
 				swap $ formatReported el),
 			(isItem el, (reportedVars,
