@@ -657,11 +657,11 @@ handleRegister db componentJid iq@(IQ { iqType = IQGet, iqFrom = Just from }) _ 
 		}]
 handleRegister db componentJid iq@(IQ { iqType = IQSet }) query
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query,
-	  Just to <- ((`telToJid` formatJID componentJid) . T.filter isDigit) =<< getFormField form (fromString "phone") = do
+	  Just to <- (`telToJid` formatJID componentJid) =<< getFormField form (fromString "phone") = do
 		registerVerification db componentJid to iq
 handleRegister db componentJid iq@(IQ { iqType = IQSet }) query
 	| [phoneEl] <- isNamed (fromString "{jabber:iq:register}phone") =<< elementChildren query,
-	  Just to <- (`telToJid` formatJID componentJid) $ T.filter isDigit $ mconcat (elementText phoneEl) = do
+	  Just to <- (`telToJid` formatJID componentJid) $ mconcat (elementText phoneEl) = do
 		registerVerification db componentJid to iq
 handleRegister db componentJid iq@(IQ { iqType = IQSet, iqFrom = Just from }) query
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren query,
@@ -1020,7 +1020,7 @@ componentStanza (ComponentContext { db, sendIQ, smsJid = (Just smsJid), componen
 componentStanza (ComponentContext { componentJid }) (ReceivedIQ (iq@IQ { iqType = IQSet, iqFrom = Just from, iqTo = Just (to@JID {jidNode = Nothing}), iqID = id, iqPayload = Just p }))
 	| [query] <- isNamed (fromString "{jabber:iq:gateway}query") p,
 	  [prompt] <- isNamed (fromString "{jabber:iq:gateway}prompt") =<< elementChildren query = do
-		case telToJid (T.filter isDigit $ mconcat $ elementText prompt) (formatJID componentJid) of
+		case telToJid (mconcat $ elementText prompt) (formatJID componentJid) of
 			Just jid ->
 				return [mkStanzaRec $ (emptyIQ IQResult) {
 					iqTo = Just from,
