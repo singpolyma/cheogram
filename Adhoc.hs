@@ -309,17 +309,16 @@ formatItem reportedVars item = intercalate (s"\t") $ map (\var ->
 		) fields
 	fields = filter isField $ elementChildren item
 
+simpleResultField :: Text -> [Text] -> Text
+simpleResultField label [value] = concat [label, s": ", value, s"\n"]
+simpleResultField label values = concat [label, s":\n", unlines values]
+
 formatResultField :: Element -> Text
 formatResultField el = case maybe ("text-single") T.unpack $ attributeText (s"type") el of
 	"hidden" -> mempty
 	"list-single" -> listLabel $ listSingleHelper el
-	"fixed" -> concat [label, s":\n", unlines (fieldValue el)]
-	"jid-single" -> concat [
-		label,
-		s": ",
-		(unlines $ (s"xmpp:" ++) <$> (fieldValue el))
-		]
-	_ -> concat [label, s": ", unlines (fieldValue el)]
+	"jid-single" -> simpleResultField label $ map (s"xmpp:" ++) $ fieldValue el
+	_ -> simpleResultField label $ fieldValue el
 	where
 	label = formatLabel (const Nothing) el
 
