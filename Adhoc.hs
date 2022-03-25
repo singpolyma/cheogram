@@ -240,9 +240,9 @@ adhocBotAnswerListSingle sendText getMessage field = do
 			sendText $ listLabel list ++ prompt
 			maybeOption <- if open then do
 					value <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly openParser)
-					return $ case value of
-						Left openValue -> Just [openValue]
-						Right itemNumber -> listLookup list itemNumber
+					return $ Just $ case value of
+						Left openValue -> [openValue]
+						Right itemNumber -> maybe ([tshow itemNumber]) id $ listLookup list itemNumber
 				else do
 					value <- untilParse getMessage (sendText helperText) (hush . Atto.parseOnly parser)
 					return $ listLookup list value
