@@ -2110,6 +2110,10 @@ main = do
 						Nothing -> do
 							maybeExistingRoute <- (parseJID =<<) <$> DB.get db (DB.byJid userJid' ["direct-message-route"])
 							DB.del db (DB.byJid userJid' ["direct-message-route"])
+							mcheoJid <- fmap (parseJID =<<) $ DB.get db (DB.byJid userJid' ["cheoJid"])
+							forM_ mcheoJid $ \cheoJid -> do
+								DB.del db (DB.byJid userJid' ["cheoJid"])
+								DB.srem db (DB.byNode cheoJid ["owners"]) [bareTxt userJid']
 							forM_ maybeExistingRoute $ \existingRoute ->
 								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid' existingRoute
 				)
