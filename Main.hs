@@ -48,6 +48,7 @@ import Network.Protocol.XMPP as XMPP -- should import qualified
 import Util
 import IQManager
 import qualified ConfigureDirectMessageRoute
+import qualified JidSwitch
 import qualified Config
 import qualified DB
 import Adhoc (adhocBotSession, commandList, queryCommandList)
@@ -137,6 +138,18 @@ code str status =
 	hasAttributeText (fromString "{http://jabber.org/protocol/muc#user}code") (== fromString str) status
 	<>
 	hasAttributeText (fromString "code") (== fromString str) status
+
+-- When we're talking to the adhoc bot we'll get a command from stuff\40example.com@cheogram.com
+-- When they're talking to us directly, we'll get the command from stuff@example.com
+-- In either case, we want to use the same key and understand it as coming from the same user
+maybeUnescape componentJid userJid
+	| jidDomain userJid == jidDomain componentJid,
+	  Just node <- jidNode userJid =
+		let resource = maybe mempty strResource $ jidResource userJid
+		in
+		-- If we can't parse the thing we unescaped, just return the original
+		fromMaybe userJid $ parseJID (unescapeJid (strNode node) ++ if T.null resource then mempty else s"/" ++ resource)
+	| otherwise = userJid
 
 cheogramDiscoInfo db componentJid sendIQ from q = do
 	canVoice <- isJust <$> getSipProxy db componentJid sendIQ from
@@ -905,6 +918,15 @@ componentStanza (ComponentContext { processDirectMessageRouteConfig, componentJi
 			return $ subscribe ++ [mkStanzaRec $ replyIQ {
 				iqFrom = parseJID (fromLocalpart ++ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName)
 			}]
+componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just (JID { jidNode = Nothing }), iqPayload = payload, iqFrom = Just from }))
+	| fmap elementName payload == Just (s"{http://jabber.org/protocol/commands}command") && (attributeText (s"node") =<< payload) == Just JidSwitch.nodeName =
+		let setJidSwitch newJid = do
+			let from' = maybeUnescape componentJid from
+			Just route <- (XMPP.parseJID <=< id) <$> DB.get db (DB.byJid from' ["direct-message-route"])
+			DB.hset db (DB.byJid newJid ["jidSwitch"]) $ JidSwitch.toAssoc from' route
+			return (from', newJid, route)
+		in
+		map mkStanzaRec <$> JidSwitch.receiveIq componentJid setJidSwitch iq
 componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqTo = Just to, iqPayload = Just payload, iqFrom = Just from }))
 	| jidNode to == Nothing,
 	  elementName payload == s"{http://jabber.org/protocol/commands}command",
@@ -2068,29 +2090,22 @@ main = do
 			void $ forkIO $ forever $ atomically (writeTChan toRejoinManager CheckPings) >> threadDelay 120000000
 			void $ forkIO $ rejoinManager db (atomically . writeTChan sendToComponent) (textToString $ formatJID componentJid) toRoomPresences toRejoinManager
 
-			-- When we're talking to the adhoc bot we'll get a command from stuff\40example.com@cheogram.com
-			-- When they're talking to us directly, we'll get the command from stuff@example.com
-			-- In either case, we want to use the same key and understand it as coming from the same user
-			let maybeUnescape userJid
-				| jidDomain userJid == jidDomain componentJid,
-				  Just node <- jidNode userJid =
-					let resource = maybe mempty strResource $ jidResource userJid
-					in
-					-- If we can't parse the thing we unescaped, just return the original
-					fromMaybe userJid $ parseJID (unescapeJid (strNode node) ++ if T.null resource then mempty else s"/" ++ resource)
-				| otherwise = userJid
-
 			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main (XMPP.jidDomain componentJid)
 				(\userJid ->
-					let userJid' = maybeUnescape userJid in
+					let userJid' = maybeUnescape componentJid userJid in
 					(parseJID =<<) <$> DB.get db (DB.byJid userJid' ["possible-route"])
 				)
+				(\userJid -> do
+					let userJid' = maybeUnescape componentJid userJid
+					res <- (JidSwitch.fromAssoc) <$> DB.hgetall db (DB.byJid userJid' ["jidSwitch"])
+					return $ fmap (\(x,y) -> (userJid', x, y)) res
+				)
 				(\userJid ->
-					let userJid' = maybeUnescape userJid in
+					let userJid' = maybeUnescape componentJid userJid in
 					(parseJID =<<) <$> DB.get db (DB.byJid userJid' ["direct-message-route"])
 				)
 				(\userJid mgatewayJid -> do
-					let userJid' = maybeUnescape userJid
+					let userJid' = maybeUnescape componentJid userJid
 					DB.del db (DB.byJid userJid' ["possible-route"])
 					case mgatewayJid of
 						Just gatewayJid -> do
@@ -2116,6 +2131,10 @@ main = do
 								DB.srem db (DB.byNode cheoJid ["owners"]) [bareTxt userJid']
 							forM_ maybeExistingRoute $ \existingRoute ->
 								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid' existingRoute
+				)
+				(\userJid ->
+					let userJid' = maybeUnescape componentJid userJid in
+					DB.del db (DB.byJid userJid' ["jidSwitch"])
 				)
 
 			jingleHandler <- UIO.runEitherIO $ Jingle.setupJingleHandlers jingleStore s5bListenOn (fromString s5bhost, s5bport)

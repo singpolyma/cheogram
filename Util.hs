@@ -291,3 +291,11 @@ queryDiscoWithNode' node to from =
 			(map (\node -> (s"{http://jabber.org/protocol/disco#info}node", [XML.ContentText node])) $ maybeToList node)
 			[]
 	}
+
+parseBool :: Text -> Maybe Bool
+parseBool input
+	| s"true" == input = Just True
+	| s"1" == input = Just True
+	| s"false" == input = Just False
+	| s"0" == input = Just False
+	| otherwise = Nothing

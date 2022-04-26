@@ -22,10 +22,12 @@ import qualified Data.UUID.V1 as UUID ( nextUUID )
 import qualified UnexceptionalIO.Trans ()
 import qualified UnexceptionalIO as UIO
 
+import CommandAction
 import StanzaRec
 import UniquePrefix
 import Util
 import qualified ConfigureDirectMessageRoute
+import qualified JidSwitch
 import qualified DB
 
 sessionLifespan :: Int
@@ -48,6 +50,19 @@ botHelp header (IQ { iqTo = Just to, iqFrom = Just from, iqPayload = Just payloa
 	items = isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren payload
 botHelp _ _ = Nothing
 
+-- This replaces certain commands that the SGX supports with our sugared versions
+maskCommands :: XMPP.JID -> [Element] -> [Element]
+maskCommands componentJid = map (\el ->
+		if attributeText (s"node") el == Just JidSwitch.backendNodeName then
+			Element (s"{http://jabber.org/protocol/disco#items}item") [
+					(s"jid", [ContentText $ formatJID componentJid ++ s"/CHEOGRAM%" ++ JidSwitch.nodeName]),
+					(s"node", [ContentText JidSwitch.nodeName]),
+					(s"name", [ContentText $ s"Change your Jabber ID"])
+			] []
+		else
+			el
+	)
+
 commandList :: JID -> Maybe Text -> JID -> JID -> [Element] -> IQ
 commandList componentJid qid from to extras =
 	(emptyIQ IQResult) {
@@ -65,8 +80,8 @@ commandList componentJid qid from to extras =
 			])
 	}
 	where
-	extraItems = map (\el ->
-			NodeElement $ el {
+	extraItems = map NodeElement $ maskCommands componentJid $ map (\el ->
+			el {
 				elementAttributes = map (\(aname, acontent) ->
 					if aname == s"{http://jabber.org/protocol/disco#items}jid" || aname == s"jid" then
 						(aname, [ContentText $ formatJID componentJid])
@@ -338,27 +353,6 @@ renderResultForm form =
 	where
 	forAccumL z xs f = mapAccumL f z xs
 
-data Action = ActionNext | ActionPrev | ActionCancel | ActionComplete
-
-actionContent :: Action -> Content
-actionContent ActionNext     = ContentText $ s"next"
-actionContent ActionPrev     = ContentText $ s"prev"
-actionContent ActionCancel   = ContentText $ s"cancel"
-actionContent ActionComplete = ContentText $ s"complete"
-
-actionCmd :: Action -> Text
-actionCmd ActionNext     = s"next"
-actionCmd ActionPrev     = s"back"
-actionCmd ActionCancel   = s"cancel"
-actionCmd ActionComplete = s"finish"
-
-actionFromXMPP :: Text -> Maybe Action
-actionFromXMPP xmpp
-	| xmpp == s"next"     = Just ActionNext
-	| xmpp == s"prev"     = Just ActionPrev
-	| xmpp == s"complete" = Just ActionComplete
-	| otherwise           = Nothing
-
 waitForAction :: (UIO.Unexceptional m) => [Action] -> (Text -> m ()) -> m XMPP.Message -> m Action
 waitForAction actions sendText getMessage = do
 	m <- getMessage
@@ -585,7 +579,7 @@ adhocBotSession db componentJid sendMessage sendIQ getMessage message@(XMPP.Mess
 			Just route -> do
 				mreply <- atomicUIO =<< (UIO.lift . sendIQ) (queryCommandList' route routeFrom)
 				case iqPayload =<< mfilter ((==IQResult) . iqType) mreply of
-					Just reply -> adhocBotRunCommand db componentJid routeFrom sendMessage' sendIQ getMessage from body $ elementChildren reply ++ internalCommands
+					Just reply -> adhocBotRunCommand db componentJid routeFrom sendMessage' sendIQ getMessage from body $ maskCommands componentJid $ elementChildren reply ++ internalCommands
 					Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage' sendIQ getMessage from body internalCommands
 			Nothing -> adhocBotRunCommand db componentJid routeFrom sendMessage' sendIQ getMessage from body internalCommands
 	| otherwise = sendHelp db componentJid sendMessage' sendIQ from routeFrom

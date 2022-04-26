@@ -5,10 +5,10 @@ HLINTFLAGS=-XHaskell2010 -XCPP -i 'Use camelCase' -i 'Use String' -i 'Use head' 
 
 all: report.html cheogram
 
-cheogram: Main.hs Adhoc.hs Config.hs ConfigureDirectMessageRoute.hs DB.hs IQManager.hs RedisURL.hs StanzaRec.hs UniquePrefix.hs Util.hs
+cheogram: Main.hs Adhoc.hs Config.hs ConfigureDirectMessageRoute.hs DB.hs IQManager.hs RedisURL.hs StanzaRec.hs UniquePrefix.hs Util.hs JidSwitch.hs
 	ghc -dynamic -package monads-tf -o cheogram $(GHCFLAGS) Main.hs
 
-report.html: Main.hs Adhoc.hs Config.hs ConfigureDirectMessageRoute.hs DB.hs IQManager.hs RedisURL.hs StanzaRec.hs UniquePrefix.hs Util.hs
+report.html: Main.hs Adhoc.hs Config.hs ConfigureDirectMessageRoute.hs DB.hs IQManager.hs RedisURL.hs StanzaRec.hs UniquePrefix.hs Util.hs JidSwitch.hs
 	-hlint $(HLINTFLAGS) --report $^
 
 shell:
