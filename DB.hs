@@ -1,4 +1,4 @@
-module DB (DB, Key(..), byJid, byNode, mk, get, getEnum, del, set, setEnum, sadd, srem, smembers, foldKeysM, hset, hdel, hgetall) where
+module DB (DB, Key(..), byJid, byNode, mk, get, getEnum, del, set, expire, setEnum, sadd, srem, smembers, foldKeysM, hset, hdel, hgetall) where
 
 import Prelude ()
 import BasicPrelude
@@ -48,6 +48,12 @@ del db key = void $ runRedisChecked db $ Redis.del [redisKey key]
 set :: (HasCallStack) => DB -> Key -> Text -> IO ()
 set db key val = do
 	Redis.Ok <- runRedisChecked db $ Redis.set (redisKey key) (encodeUtf8 val)
+	return ()
+
+expire :: (HasCallStack) => DB -> Key -> Integer -> IO ()
+expire db key seconds = do
+	-- True if set, False if key didn't exist, but actually I don't care
+	_ <- runRedisChecked db $ Redis.expire (redisKey key) seconds
 	return ()
 
 setEnum :: (HasCallStack, Enum a) => DB -> Key -> a -> IO ()

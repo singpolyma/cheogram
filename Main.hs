@@ -923,7 +923,10 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqT
 		let setJidSwitch newJid = do
 			let from' = maybeUnescape componentJid from
 			Just route <- (XMPP.parseJID <=< id) <$> DB.get db (DB.byJid from' ["direct-message-route"])
-			DB.hset db (DB.byJid newJid ["jidSwitch"]) $ JidSwitch.toAssoc from' route
+			let key = DB.byJid newJid ["jidSwitch"]
+			DB.hset db key $ JidSwitch.toAssoc from' route
+			-- I figure 24 hours is a wide enough window to accept a JID switch
+			DB.expire db key $ 60 * 60 * 24
 			return (from', newJid, route)
 		in
 		map mkStanzaRec <$> JidSwitch.receiveIq componentJid setJidSwitch iq
