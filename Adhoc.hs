@@ -572,7 +572,9 @@ adhocBotRunCommand db componentJid routeFrom sendMessage sendIQ getMessage from 
 				| IQResult == iqType resultIQ,
 				  [cmd] <- isNamed (s"{http://jabber.org/protocol/commands}command") =<< (justZ $ iqPayload resultIQ),
 				  attributeText (s"status") cmd `elem` [Just (s"completed"), Just (s"canceled")] -> return ()
-				| otherwise -> sendMessage $ mkSMS componentJid from (s"Command error")
+				| otherwise -> do
+					log "COMMAND ERROR" resultIQ
+					sendMessage $ mkSMS componentJid from (s"Command error")
 			Nothing -> sendMessage $ mkSMS componentJid from (s"Command timed out")
 
 adhocBotSession :: (UIO.Unexceptional m) => DB.DB -> JID -> (XMPP.Message -> m ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> STM XMPP.Message -> XMPP.Message-> m ()
