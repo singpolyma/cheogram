@@ -974,10 +974,10 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqT
 					s"To start registration with " ++ XMPP.formatJID from ++ s" reply with: register " ++ XMPP.formatJID from ++
 					s"\n(If you do not wish to start this registration, simply ignore this message.)"
 			]
-componentStanza _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
+componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
 	| iqType iq `elem` [IQGet, IQSet],
-	  [_] <- isNamed (fromString "{jabber:iq:register}query") p = do
-		return [mkStanzaRec $ iqNotImplemented iq]
+	  [query] <- isNamed (fromString "{jabber:iq:register}query") p = do
+		handleRegister db componentJid iq query
 componentStanza (ComponentContext { db, componentJid, maybeAvatar, sendIQ }) (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [q] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
