@@ -356,6 +356,13 @@ mapBody f (m@Message { messagePayloads = payloads }) =
 		) payloads
 	}
 
+deleteDirectMessageRoute db userJid = do
+	DB.del db (DB.byJid userJid ["direct-message-route"])
+	mcheoJid <- fmap (parseJID =<<) $ DB.get db (DB.byJid userJid ["cheoJid"])
+	forM_ mcheoJid $ \cheoJid -> do
+		DB.del db (DB.byJid userJid ["cheoJid"])
+		DB.srem db (DB.byNode cheoJid ["owners"]) [bareTxt userJid]
+
 unregisterDirectMessageRoute db componentJid userJid route = do
 	maybeCheoJid <- (parseJID =<<) <$> DB.get db (DB.byJid userJid ["cheoJid"])
 	forM_ maybeCheoJid $ \cheoJid -> do
@@ -683,12 +690,24 @@ handleRegister db componentJid iq@(IQ { iqType = IQSet, iqFrom = Just from }) qu
 handleRegister db componentJid iq@(IQ { iqType = IQSet, iqPayload = Just payload, iqFrom = Just from }) query
 	| [passwordEl] <- isNamed (fromString "{jabber:iq:register}password") =<< elementChildren query = do
 		handleVerificationCode db componentJid (mconcat $ elementText passwordEl) iq from
-handleRegister db componentJid iq@(IQ { iqFrom = Just from, iqType = IQSet }) query
+handleRegister db componentJid iq@(IQ { iqTo = Just to, iqFrom = Just from, iqType = IQSet }) query
 	| [_] <- isNamed (fromString "{jabber:iq:register}remove") =<< elementChildren query = do
-		tel <- fromMaybe mempty <$> DB.get db (DB.byJid from ["registered"])
-		forM_ (telToJid tel (formatJID componentJid)) $ \cheoJid ->
-			DB.del db (DB.byNode cheoJid ["registered"])
-		DB.del db (DB.byJid from ["registered"])
+		fromBackend <- case XMPP.parseJID =<< (unescapeJid . XMPP.strNode <$> XMPP.jidNode to) of
+			Just unproxiedTo -> do
+				route <- (XMPP.parseJID <=< id) <$> DB.get db (DB.byJid unproxiedTo ["direct-message-route"])
+				if fmap bareTxt route == Just (bareTxt from) then do
+					deleteDirectMessageRoute db unproxiedTo
+					return True
+				else
+					return False
+			Nothing -> return False
+
+		when (not fromBackend) $ do
+			tel <- fromMaybe mempty <$> DB.get db (DB.byJid from ["registered"])
+			forM_ (telToJid tel (formatJID componentJid)) $ \cheoJid ->
+				DB.del db (DB.byNode cheoJid ["registered"])
+			DB.del db (DB.byJid from ["registered"])
+
 		return [mkStanzaRec $ iq {
 			iqTo = iqFrom iq,
 			iqFrom = iqTo iq,
@@ -974,10 +993,10 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqT
 					s"To start registration with " ++ XMPP.formatJID from ++ s" reply with: register " ++ XMPP.formatJID from ++
 					s"\n(If you do not wish to start this registration, simply ignore this message.)"
 			]
-componentStanza _ (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
+componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
 	| iqType iq `elem` [IQGet, IQSet],
-	  [_] <- isNamed (fromString "{jabber:iq:register}query") p = do
-		return [mkStanzaRec $ iqNotImplemented iq]
+	  [query] <- isNamed (fromString "{jabber:iq:register}query") p = do
+		handleRegister db componentJid iq query
 componentStanza (ComponentContext { db, componentJid, maybeAvatar, sendIQ }) (ReceivedIQ (IQ { iqType = IQGet, iqFrom = Just from, iqTo = Just to, iqID = id, iqPayload = Just p }))
 	| Nothing <- jidNode to,
 	  [q] <- isNamed (fromString "{http://jabber.org/protocol/disco#info}query") p = do
@@ -2127,11 +2146,7 @@ main = do
 							return ()
 						Nothing -> do
 							maybeExistingRoute <- (parseJID =<<) <$> DB.get db (DB.byJid userJid' ["direct-message-route"])
-							DB.del db (DB.byJid userJid' ["direct-message-route"])
-							mcheoJid <- fmap (parseJID =<<) $ DB.get db (DB.byJid userJid' ["cheoJid"])
-							forM_ mcheoJid $ \cheoJid -> do
-								DB.del db (DB.byJid userJid' ["cheoJid"])
-								DB.srem db (DB.byNode cheoJid ["owners"]) [bareTxt userJid']
+							deleteDirectMessageRoute db userJid'
 							forM_ maybeExistingRoute $ \existingRoute ->
 								atomically . writeTChan sendToComponent . mkStanzaRec =<< unregisterDirectMessageRoute db componentJid userJid' existingRoute
 				)
