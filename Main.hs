@@ -57,9 +57,20 @@ import StanzaRec
 instance Ord JID where
 	compare x y = compare (show x) (show y)
 
+-- Do not use uncommon file extensions for ambiguous MIME types
+badExts :: [Text]
+badExts = [
+		s"mpg4", s"mp4v",
+		s"mpga", s"m2a", s"m3a", s"mp2", s"mp2a",
+		s"m1v", s"m2v", s"mpe"
+	]
+
 mimeToExtMap :: SMap.Map String Text
-mimeToExtMap = SMap.fromList $ map (\(ext, mimeBytes) ->
-		(textToString (decodeUtf8 mimeBytes), ext)
+mimeToExtMap = SMap.fromList $ mapMaybe (\(ext, mimeBytes) ->
+		if ext `elem` badExts then
+			Nothing
+		else
+			Just (textToString (decodeUtf8 mimeBytes), ext)
 	) $ SMap.toList defaultMimeMap
 
 queryDisco to from = (:[]) . mkStanzaRec <$> queryDiscoWithNode Nothing to from
