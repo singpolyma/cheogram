@@ -692,28 +692,16 @@ handleRegister db componentJid iq@(IQ { iqType = IQSet, iqPayload = Just payload
 		handleVerificationCode db componentJid (mconcat $ elementText passwordEl) iq from
 handleRegister db componentJid iq@(IQ { iqTo = Just to, iqFrom = Just from, iqType = IQSet }) query
 	| [_] <- isNamed (fromString "{jabber:iq:register}remove") =<< elementChildren query = do
-		fromBackend <- case XMPP.parseJID =<< (unescapeJid . XMPP.strNode <$> XMPP.jidNode to) of
-			Just unproxiedTo -> do
-				route <- (XMPP.parseJID <=< id) <$> DB.get db (DB.byJid unproxiedTo ["direct-message-route"])
-				if fmap bareTxt route == Just (bareTxt from) then do
-					deleteDirectMessageRoute db unproxiedTo
-					return True
-				else
-					return False
-			Nothing -> return False
+		tel <- fromMaybe mempty <$> DB.get db (DB.byJid from ["registered"])
+		forM_ (telToJid tel (formatJID componentJid)) $ \cheoJid ->
+			DB.del db (DB.byNode cheoJid ["registered"])
+		DB.del db (DB.byJid from ["registered"])
 
-		when (not fromBackend) $ do
-			tel <- fromMaybe mempty <$> DB.get db (DB.byJid from ["registered"])
-			forM_ (telToJid tel (formatJID componentJid)) $ \cheoJid ->
-				DB.del db (DB.byNode cheoJid ["registered"])
-			DB.del db (DB.byJid from ["registered"])
-
-		return [mkStanzaRec $ iq {
-			iqTo = iqFrom iq,
-			iqFrom = iqTo iq,
-			iqType = IQResult,
-			iqPayload = Just $ Element (fromString "{jabber:iq:register}query") [] []
-		}]
+		return [mkStanzaRec $
+				iqReply
+				(Just $ Element (fromString "{jabber:iq:register}query") [] [])
+				iq
+			]
 handleRegister _ _ iq@(IQ { iqType = typ }) _
 	| typ `elem` [IQGet, IQSet] = do
 		log "HANDLEREGISTER return error" iq
@@ -1418,6 +1406,14 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 				  fmap (((s"CHEOGRAM%") `T.isPrefixOf`) . strResource) (jidResource to) /= Just True -> liftIO $ do
 					maybeRoute <- DB.get db (DB.byJid routeTo ["direct-message-route"])
 					case (maybeRoute, mapToComponent from) of
+						(Just route, _)
+							| route == bareTxt from,
+							  ReceivedIQ iq <- stanza,
+							  iqType iq == IQSet,
+							  [query] <- isNamed (fromString "{jabber:iq:register}query") =<< maybeToList (iqPayload iq) -> do
+								deleteDirectMessageRoute db routeTo
+								sendToComponent $ mkStanzaRec $ iqReply
+									(Just $ Element (fromString "{jabber:iq:register}query") [] []) iq
 						(Just route, Just componentFrom) | route == strDomain (jidDomain from) ->
 							(sendToComponent . receivedStanza) =<< mapReceivedMessageM (UIO.lift . cacheOOB) (receivedStanzaFromTo componentFrom routeTo stanza)
 						(Just route, _) -- Alphanumeric senders
