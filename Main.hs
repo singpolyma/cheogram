@@ -133,9 +133,10 @@ getDirectInvitation m = do
 		) <*>
 		Just (attributeText (fromString "password") x)
 
-nickFor db jid existingRoom
+nickFor db componentJid jid existingRoom
 	| fmap bareTxt existingRoom == Just bareFrom = return $ fromMaybe (s"nonick") resourceFrom
-	| Just tel <- mfilter isE164 (strNode <$> jidNode jid) = do
+	| jidDomain componentJid == jidDomain jid,
+	  Just tel <- mfilter isE164 (strNode <$> jidNode jid) = do
 		mnick <- DB.get db (DB.byNode jid ["nick"])
 		case mnick of
 			Just nick -> return (tel <> s" \"" <> nick <> s"\"")
@@ -412,7 +413,7 @@ componentMessage db componentJid m@(Message { messageTo = Just to@JID{ jidNode =
 		forM_ (invitePassword invite) $ \password ->
 			DB.set db (DB.byNode to [textToString $ formatJID $ inviteMUC invite, "muc_roomsecret"]) password
 		existingInvite <- (parseJID =<<) <$> DB.get db (DB.byNode to ["invited"])
-		nick <- nickFor db (inviteFrom invite) existingRoom
+		nick <- nickFor db componentJid (inviteFrom invite) existingRoom
 		let txt = mconcat [
 				fromString "* ",
 				nick,
@@ -459,7 +460,7 @@ componentMessage db componentJid m@(Message { messageTo = Just to }) existingRoo
 					]
 				}]
 			Nothing -> do
-				nick <- nickFor db from existingRoom
+				nick <- nickFor db componentJid from existingRoom
 				let txt = mconcat [s"<", nick, s" says> ", strippedBody]
 				return [mkStanzaRec $ mkSMS componentJid smsJid txt]
 	where
