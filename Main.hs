@@ -66,7 +66,9 @@ badExts = [
 	]
 
 mimeToExtMap :: SMap.Map String Text
-mimeToExtMap = SMap.fromList $ mapMaybe (\(ext, mimeBytes) ->
+mimeToExtMap = SMap.fromList $
+	(\xs -> ("audio/amr", s"amr") : ("audio/AMR", s"amr") : xs) $
+	mapMaybe (\(ext, mimeBytes) ->
 		if ext `elem` badExts then
 			Nothing
 		else
