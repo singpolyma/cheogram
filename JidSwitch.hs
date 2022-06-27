@@ -47,6 +47,8 @@ newSession = UUID.nextUUID >>= go
 
 receiveIq componentJid setJidSwitch iq@(XMPP.IQ { XMPP.iqFrom = Just from, XMPP.iqPayload = Just realPayload })
 	| [command] <- isNamed (fromString "{http://jabber.org/protocol/commands}command") =<< [realPayload],
+	  Just action <- attributeText (s"action") command,
+	  action `elem` [s"complete", s"execute"],
 	  Just sid <- sessionIDFromText =<< attributeText (s"sessionid") command,
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
 	  Just newJid <- XMPP.parseJID =<< getFormField form (s"new-jid") = do
@@ -58,40 +60,44 @@ receiveIq componentJid setJidSwitch iq@(XMPP.IQ { XMPP.iqFrom = Just from, XMPP.
 				bareTxt newJid',
 				s". To complete this request send \"register\""
 			],
-			mkStanzaRec $ flip iqReply iq $ Just $ commandStage sid [] (s"completed") $
+			mkStanzaRec $ flip iqReply iq $ Just $ commandStage sid [] (s"completed") [
 				Element (s"{http://jabber.org/protocol/commands}note") [
 					(s"{http://jabber.org/protocol/commands}type", [ContentText $ s"info"])
 				] [
 					NodeContent $ ContentText $ s"Please check for a message on " ++ bareTxt newJid'
 				]
-			]
+			]]
+	| [command] <- isNamed (fromString "{http://jabber.org/protocol/commands}command") =<< [realPayload],
+	  Just sid <- sessionIDFromText =<< attributeText (s"sessionid") command =
+		return [mkStanzaRec $ flip iqReply iq $ Just $ commandStage sid [ActionComplete] (s"canceled") []]
 	| otherwise = do
 		sid <- newSession
 		return [mkStanzaRec $ stage1 sid iq]
 
-stage1 sid iq = flip iqReply iq $ Just $ commandStage sid [ActionComplete] (s"executing") $
-	Element (fromString "{jabber:x:data}x") [
-		(fromString "{jabber:x:data}type", [ContentText $ s"form"])
-	] [
-		NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ s"Change Jabber ID"],
-		NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
-			NodeContent $ ContentText $ s"Enter the Jabber ID you'd like to move your account to"
-		],
-		NodeElement $ Element (fromString "{jabber:x:data}field") [
-			(fromString "{jabber:x:data}type", [ContentText $ s"jid-single"]),
-			(fromString "{jabber:x:data}var", [ContentText $ s"new-jid"]),
-			(fromString "{jabber:x:data}label", [ContentText $ s"New Jabber ID"])
-		] []
+stage1 sid iq = flip iqReply iq $ Just $ commandStage sid [ActionComplete] (s"executing") [
+		Element (fromString "{jabber:x:data}x") [
+			(fromString "{jabber:x:data}type", [ContentText $ s"form"])
+		] [
+			NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ s"Change Jabber ID"],
+			NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
+				NodeContent $ ContentText $ s"Enter the Jabber ID you'd like to move your account to"
+			],
+			NodeElement $ Element (fromString "{jabber:x:data}field") [
+				(fromString "{jabber:x:data}type", [ContentText $ s"jid-single"]),
+				(fromString "{jabber:x:data}var", [ContentText $ s"new-jid"]),
+				(fromString "{jabber:x:data}label", [ContentText $ s"New Jabber ID"])
+			] []
+		]
 	]
 
-commandStage :: SessionID -> [Action] -> Text -> Element -> Element
+commandStage :: SessionID -> [Action] -> Text -> [Element] -> Element
 commandStage sid acceptedActions status el = Element (s"{http://jabber.org/protocol/commands}command")
 	[
 		(s"{http://jabber.org/protocol/commands}node", [ContentText nodeName]),
 		(s"{http://jabber.org/protocol/commands}sessionid", [ContentText $ sessionIDToText sid]),
 		(s"{http://jabber.org/protocol/commands}status", [ContentText status])
 	]
-	(actions ++ [NodeElement el])
+	(actions ++ map NodeElement el)
 	where
 	actions
 		| null acceptedActions = []
