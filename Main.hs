@@ -526,8 +526,8 @@ handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer compon
 	| not join,
 	  [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< payloads,
 	  (_:_) <- code "332" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
-		log "SERVER RESTART, rejoin in 5s" (to, from)
-		void $ forkIO $ threadDelay 5000000 >> atomically (writeTChan toRejoinManager $ ForceRejoin from to)
+		log "SERVER RESTART, clear join status" (to, from)
+		void $ atomically (writeTChan toRejoinManager $ JoinError from)
 		return []
 	| not join && existingRoom == Just from = do
 		DB.del db (DB.byNode to ["joined"])
@@ -781,8 +781,8 @@ componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid }) 
 		getBody "jabber:component:accept" m
 componentStanza (ComponentContext { smsJid = (Just smsJid), toRejoinManager, componentJid }) (ReceivedPresence p@(Presence { presenceType = PresenceError, presenceFrom = Just from, presenceTo = Just to, presenceID = Just id }))
 	| fromString "CHEOGRAMREJOIN%" `T.isPrefixOf` id = do
-		log "FAILED TO REJOIN, try again in 10s" p
-		void $ forkIO $ threadDelay 10000000 >> atomically (writeTChan toRejoinManager $ ForceRejoin from to)
+		log "FAILED TO REJOIN, clear join state" p
+		void $ atomically (writeTChan toRejoinManager $ JoinError from)
 		return []
 	| fromString "CHEOGRAMJOIN%" `T.isPrefixOf` id = do
 		log "FAILED TO JOIN" p
@@ -1876,6 +1876,7 @@ data RejoinManagerCommand =
 	PingReply   JID |
 	PingError   JID |
 	Joined      JID |
+	JoinError   JID |
 	ForceRejoin JID JID
 
 data RejoinManagerState = PingSent JID | Rejoining
@@ -1901,6 +1902,9 @@ rejoinManager db sendToComponent componentJid toRoomPresences toRejoinManager =
 			_ -> return ()
 		next state
 	go state (Joined mucJid) =
+		next $! Map.delete mucJid state
+	go state (JoinError mucJid) =
+		-- Delete state, so next ping will happen and fail and attempt rejoin
 		next $! Map.delete mucJid state
 	go state (ForceRejoin mucJid cheoJid) = do
 		atomically $ writeTChan toRoomPresences (StartRejoin cheoJid mucJid)
