@@ -51,6 +51,7 @@ import qualified ConfigureDirectMessageRoute
 import qualified JidSwitch
 import qualified Config
 import qualified DB
+import qualified VCard4
 import Adhoc (adhocBotSession, commandList, queryCommandList)
 import StanzaRec
 
@@ -1428,8 +1429,21 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 								deleteDirectMessageRoute db routeTo
 								sendToComponent $ mkStanzaRec $ iqReply
 									(Just $ Element (fromString "{jabber:iq:register}query") [] []) iq
-						(Just route, Just componentFrom) | route == strDomain (jidDomain from) ->
-							(sendToComponent . receivedStanza) =<< mapReceivedMessageM (UIO.lift . cacheOOB) (receivedStanzaFromTo componentFrom routeTo stanza)
+						(Just route, Just componentFrom)
+							| route == strDomain (jidDomain from),
+							  ReceivedIQ iq <- stanza,
+							  [items] <- XML.isNamed (s"{http://jabber.org/protocol/pubsub}items") =<< XML.elementChildren =<< XML.isNamed (s"{http://jabber.org/protocol/pubsub}pubsub") =<< justZ (iqPayload iq),
+							  Just (s"urn:xmpp:vcard4") == XML.attributeText (s"node") items -> do
+								mvcard4 <- UIO.lift $ VCard4.fetch sendIQ routeTo (Just componentFrom)
+								case mvcard4 of
+									Just vcard4 -> sendToComponent $ mkStanzaRec $ iqReply (
+											Just $ XML.Element (s"{http://jabber.org/protocol/pubsub}pubsub") [] [
+											XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/pubsub}items") [] [
+											XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/pubsub}item") [] [XML.NodeElement vcard4]]]
+										) iq
+									Nothing -> sendToComponent $ mkStanzaRec $ iqNotImplemented iq
+							| route == strDomain (jidDomain from) ->
+								(sendToComponent . receivedStanza) =<< mapReceivedMessageM (UIO.lift . cacheOOB) (receivedStanzaFromTo componentFrom routeTo stanza)
 						(Just route, _) -- Alphanumeric senders
 							| route == strDomain (jidDomain from),
 							  Just localpart <- strNode <$> jidNode from,
