@@ -1294,8 +1294,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 	sendThread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
 		stanza <- liftIO $ atomically $ readTChan toComponent
 
-		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaTo stanza)
-		pushStatsd [StatsD.stat ["stanzas", "out" ++ tags] 1 "c" Nothing]
+		pushStatsd [StatsD.stat ["stanzas", "out"] 1 "c" Nothing]
 		putStanza =<< (liftIO . ensureId) stanza
 
 	recvThread <- forkXMPP $ forever $ flip catchError (log "component read EXCEPTION") $
@@ -1303,8 +1302,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 
 	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread sendThread >> killThread recvThread)) $ forever $ do
 		stanza <- atomicUIO $ readTChan toStanzaProcessor
-		let tags = maybe "" (";domain=" ++) (textToString . strDomain . jidDomain <$> stanzaFrom (receivedStanza stanza))
-		pushStatsd [StatsD.stat ["stanzas", "in" ++ tags] 1 "c" Nothing]
+		pushStatsd [StatsD.stat ["stanzas", "in"] 1 "c" Nothing]
 		liftIO $ forkIO $ case stanza of
 			(ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
 				| Just returnFrom <- parseJID (bareTxt to ++ s"/capsQuery") ->
