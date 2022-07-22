@@ -33,7 +33,7 @@ type ClearSwitch = XMPP.JID -> IO ()
 main :: XMPP.Domain -> GetPossibleRoute -> GetPossibleSwitch -> GetRouteJid -> SetRouteJid -> ClearSwitch -> IO (XMPP.IQ -> IO (Maybe XMPP.IQ))
 main componentDomain getPossibleRoute getPossibleSwitch getRouteJid setRouteJid clearSwitch = do
 	stanzas <- newTQueueIO
-	void $ forkIO $ iterateM_ (\sessions -> do
+	void $ flip forkFinally (log "ConfigureDirectMessageRouteTOP") $ void $ iterateM_ (\sessions -> do
 			(iq, reply) <- atomically (readTQueue stanzas)
 			(sessions', response) <- processOneIQ componentDomain getPossibleRoute getPossibleSwitch getRouteJid setRouteJid clearSwitch sessions iq
 			atomically $ reply response

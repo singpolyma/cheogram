@@ -299,3 +299,10 @@ parseBool input
 	| s"false" == input = Just False
 	| s"0" == input = Just False
 	| otherwise = Nothing
+
+hasLocked :: String -> IO a -> IO a
+hasLocked msg action =
+  action `Ex.catches`
+  [ Ex.Handler $ \exc@Ex.BlockedIndefinitelyOnMVar -> Util.log "[MVar]" msg >> Ex.throwIO exc
+  , Ex.Handler $ \exc@Ex.BlockedIndefinitelyOnSTM -> Util.log "[STM]" msg >> Ex.throwIO exc
+  ]

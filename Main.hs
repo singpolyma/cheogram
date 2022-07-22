@@ -309,7 +309,7 @@ routeQueryOrReply db componentJid from smsJid resource query reply = do
 	where
 	maybeRouteFrom = parseJID $ escapeJid (bareTxt from) ++ s"@" ++ formatJID componentJid ++ s"/" ++ (fromString resource)
 
-routeQueryStateful db componentJid sendIQ from targetNode query = do
+routeQueryStateful db componentJid sendIQ from targetNode query = hasLocked "routeQueryStateful" $ do
 	maybeRoute <- DB.get db (DB.byJid from ["direct-message-route"])
 	case (maybeRoute, maybeRouteFrom) of
 		(Just route, Just routeFrom) -> do
@@ -755,7 +755,7 @@ componentStanza (ComponentContext { adhocBotMessage, ctxCacheOOB, componentJid }
 		reply' <- UIO.lift $ ctxCacheOOB reply
 		return [mkStanzaRec reply']
 	| Just _ <- getBody "jabber:component:accept" m = do
-		atomicUIO $ adhocBotMessage m
+		hasLocked "adhocBotMessage" $ atomicUIO $ adhocBotMessage m
 		return []
 	| otherwise = log "WEIRD BODYLESS MESSAGE DIRECT TO COMPONENT" m >> return []
 componentStanza (ComponentContext { db, componentJid, sendIQ, smsJid = Just smsJid }) (ReceivedMessage (m@Message { messageTo = Just to, messageFrom = Just from}))
@@ -799,7 +799,7 @@ componentStanza (ComponentContext { db, smsJid = (Just smsJid), toRoomPresences,
 		presencePayloads = payloads
 	})) | typ `elem` [PresenceAvailable, PresenceUnavailable] = do
 		existingRoom <- (parseJID =<<) <$> DB.get db (DB.byNode to ["joined"])
-		handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads (typ == PresenceAvailable)
+		hasLocked "handleJoinPartRoom" $ handleJoinPartRoom db toRoomPresences toRejoinManager toJoinPartDebouncer componentJid existingRoom from to smsJid payloads (typ == PresenceAvailable)
 componentStanza (ComponentContext { db, componentJid, sendIQ, maybeAvatar }) (ReceivedPresence (Presence { presenceType = PresenceSubscribe, presenceFrom = Just from, presenceTo = Just to@JID { jidNode = Nothing } })) = do
 	avail <- cheogramAvailable db componentJid sendIQ to from
 	return $ [
@@ -1292,16 +1292,16 @@ cacheOOB magic pushStatsd jingleStore jingleStoreURL m@(XMPP.Message { XMPP.mess
 
 component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqReceiver adhocBotMessage toRoomPresences toRejoinManager toJoinPartDebouncer toComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid registrationJids conferenceServers = do
 	sendThread <- forkXMPP $ forever $ flip catchError (log "component EXCEPTION") $ do
-		stanza <- liftIO $ atomically $ readTChan toComponent
+		stanza <- liftIO $ hasLocked "read toComponent" $ atomically $ readTChan toComponent
 
 		pushStatsd [StatsD.stat ["stanzas", "out"] 1 "c" Nothing]
 		putStanza =<< (liftIO . ensureId) stanza
 
 	recvThread <- forkXMPP $ forever $ flip catchError (log "component read EXCEPTION") $
-		(atomicUIO . writeTChan toStanzaProcessor) =<< getStanza
+		(liftIO . hasLocked "write toStanzaProcessor" . atomicUIO . writeTChan toStanzaProcessor) =<< getStanza
 
 	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread sendThread >> killThread recvThread)) $ forever $ do
-		stanza <- atomicUIO $ readTChan toStanzaProcessor
+		stanza <- liftIO $ hasLocked "read toStanzaProcessor" $ atomicUIO $ readTChan toStanzaProcessor
 		pushStatsd [StatsD.stat ["stanzas", "in"] 1 "c" Nothing]
 		liftIO $ forkIO $ case stanza of
 			(ReceivedPresence p@(Presence { presenceType = PresenceAvailable, presenceFrom = Just from, presenceTo = Just to }))
@@ -1480,7 +1480,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 					mapM_ sendToComponent =<< componentStanza (ComponentContext db backendTo registrationJids adhocBotMessage cacheOOB toRoomPresences toRejoinManager toJoinPartDebouncer processDirectMessageRouteConfig componentJid sendIQ maybeAvatar) stanza
 	where
 	mapToComponent = mapToBackend (formatJID componentJid)
-	sendToComponent = atomically . writeTChan toComponent
+	sendToComponent = hasLocked "sendToComponent" . atomically . writeTChan toComponent
 
 	stanzaError (ReceivedMessage m) errorPayload =
 		mkStanzaRec $ m {
@@ -2130,13 +2130,13 @@ main = do
 
 			(sendIQ, iqReceiver) <- iqManager $ atomicUIO . writeTChan sendToComponent . mkStanzaRec
 			adhocBotMessages <- atomically newTChan
-			void $ forkIO $ adhocBotManager db componentJid (atomicUIO . writeTChan sendToComponent . mkStanzaRec) sendIQ (readTChan adhocBotMessages)
+			void $ forkFinally (adhocBotManager db componentJid (atomicUIO . writeTChan sendToComponent . mkStanzaRec) sendIQ (readTChan adhocBotMessages)) (log "adhocBotManagerTOP")
 
-			void $ forkIO $ joinPartDebouncer db backendHost (atomically . writeTChan sendToComponent) componentJid toRoomPresences toJoinPartDebouncer
-			void $ forkIO $ roomPresences db toRoomPresences
+			void $ forkFinally (void $ joinPartDebouncer db backendHost (atomically . writeTChan sendToComponent) componentJid toRoomPresences toJoinPartDebouncer) (log "joinPartDebouncerTOP")
+			void $ forkFinally (void $ roomPresences db toRoomPresences) (log "roomPresencesTOP")
 
 			void $ forkIO $ forever $ atomically (writeTChan toRejoinManager CheckPings) >> threadDelay 120000000
-			void $ forkIO $ rejoinManager db (atomically . writeTChan sendToComponent) (textToString $ formatJID componentJid) toRoomPresences toRejoinManager
+			void $ forkFinally (void $ rejoinManager db (atomically . writeTChan sendToComponent) (textToString $ formatJID componentJid) toRoomPresences toRejoinManager) (log "rejoinManagerTOP")
 
 			processDirectMessageRouteConfig <- ConfigureDirectMessageRoute.main (XMPP.jidDomain componentJid)
 				(\userJid ->
