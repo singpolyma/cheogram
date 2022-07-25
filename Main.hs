@@ -1842,7 +1842,15 @@ processSMS db componentJid conferenceServers smsJid cheoJid txt = do
 			}]
 		Just (Send msg)
 			| Just room <- existingRoom -> sendToRoom cheoJid room msg
-			| otherwise -> return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "You are not joined to a group")]
+			| otherwise -> do
+				recentlyTold <- fromMaybe False <$> DB.getEnum db (DB.byNode smsJid ["recently-told-not-joined"])
+				if (not recentlyTold) then do
+					DB.setEnum db (DB.byNode smsJid ["recently-told-not-joined"]) True
+					DB.expire db (DB.byNode smsJid ["recently-told-not-joined"]) (60*60)
+					return [mkStanzaRec $ mkSMS componentJid smsJid (fromString "You are not joined to a group")]
+				else do
+					log "RECENTLY TOLD" smsJid
+					return []
 		Just (Debounce time) -> do
 			DB.set db (DB.byNode cheoJid ["debounce"]) (tshow time)
 			return []
