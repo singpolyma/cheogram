@@ -430,21 +430,33 @@ stage1 possibleRoute existingRoute iqTo iqID sid = (XMPP.emptyIQ XMPP.IQResult) 
 	XMPP.iqID = Just iqID,
 	XMPP.iqPayload = Just $ commandStage sid False $
 		Element (fromString "{jabber:x:data}x") [
-			(fromString "{jabber:x:data}type", [ContentText $ s"form"])
+			(s"{jabber:x:data}type", [s"form"])
 		] (catMaybes [
-			Just $ NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ s"Configure Direct Message Route"],
-			Just $ NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
+			Just $ NodeElement $ Element (s"{jabber:x:data}title") [] [NodeContent $ s"Configure Direct Message Route"],
+			Just $ NodeElement $ Element (s"{jabber:x:data}instructions") [] [
 				NodeContent $ ContentText $ s"Enter the gateway to use for routing your direct messages over SMS."
 			],
-			flip fmap possibleRoute $ \route -> NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
+			flip fmap possibleRoute $ \route -> NodeElement $ Element (s"{jabber:x:data}instructions") [] [
 				NodeContent $ ContentText $ s"To continue your registration with " ++ XMPP.formatJID route ++ s" please enter " ++ XMPP.formatJID route
 			],
-			Just $ NodeElement $ Element (fromString "{jabber:x:data}field") [
-				(fromString "{jabber:x:data}type", [ContentText $ s"jid-single"]),
-				(fromString "{jabber:x:data}var", [ContentText $ s"gateway-jid"]),
-				(fromString "{jabber:x:data}label", [ContentText $ s"Gateway"])
+			Just $ NodeElement $ Element (s"{jabber:x:data}field") [
+				(s"{jabber:x:data}type", [s"list-single"]),
+				(s"{jabber:x:data}var", [s"gateway-jid"]),
+				(s"{jabber:x:data}label", [s"Gateway"])
 			] [
-				NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ maybe mempty XMPP.formatJID existingRoute]
+				NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ ContentText $ maybe mempty XMPP.formatJID existingRoute],
+				NodeElement $ Element (s"{http://jabber.org/protocol/xdata-validate}validate")
+					[(s"datatype", [s"xs:string"])]
+					[NodeElement $ Element (s"{http://jabber.org/protocol/xdata-validate}open") [] []],
+				NodeElement $ Element (s"{jabber:x:data}option")
+					[(s"label", [s"JMP"])]
+					[NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ s"jmp.chat"]],
+				NodeElement $ Element (s"{jabber:x:data}option")
+					[(s"label", [s"Vonage SGX"])]
+					[NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ s"vonage.sgx.soprani.ca"]],
+				NodeElement $ Element (s"{jabber:x:data}option")
+					[(s"label", [s"Twilio SGX"])]
+					[NodeElement $ Element (s"{jabber:x:data}value") [] [NodeContent $ s"twilio.sgx.soprani.ca"]]
 			]
 		])
 }
