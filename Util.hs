@@ -4,6 +4,7 @@ import Prelude ()
 import BasicPrelude
 import Control.Concurrent
 import Control.Concurrent.STM (STM, atomically)
+import GHC.Stack (HasCallStack)
 import Data.Word (Word16)
 import Data.Bits (shiftL, (.|.))
 import Data.Char (isDigit)
@@ -28,7 +29,7 @@ import qualified Text.Regex.PCRE.Light as PCRE
 instance Unexceptional XMPP.XMPP where
 	lift = liftIO . UIO.lift
 
-log :: (Show a, Unexceptional m) => String -> a -> m ()
+log :: (HasCallStack, Show a, Unexceptional m) => String -> a -> m ()
 log tag x = fromIO_ $ do
 	time <- getCurrentTime
 	putStr (tshow time ++ s" " ++ fromString tag ++ s" :: ") >> print x >> putStrLn mempty
@@ -39,10 +40,10 @@ s = fromString
 (.:) :: (c -> d) -> (a -> b -> c) -> a -> b -> d
 (.:) = (.) . (.)
 
-fromIO_ :: (Unexceptional m) => IO a -> m a
+fromIO_ :: (HasCallStack, Unexceptional m) => IO a -> m a
 fromIO_ = fmap (either absurd id) . UIO.fromIO' (error . show)
 
-atomicUIO :: (Unexceptional m) => STM a -> m a
+atomicUIO :: (HasCallStack, Unexceptional m) => STM a -> m a
 atomicUIO = fromIO_ . atomically
 
 escapeJid :: Text -> Text
