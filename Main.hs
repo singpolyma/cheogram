@@ -9,6 +9,7 @@ import Control.Concurrent.STM
 import Data.Foldable (forM_, mapM_, toList)
 import Data.Traversable (forM, mapM)
 import System.Environment (getArgs)
+import System.Exit (die)
 import Control.Error (readZ, MaybeT(..), hoistMaybe, headZ, justZ, hush, atZ)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Network.Socket (PortNumber)
@@ -1297,7 +1298,13 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 		pushStatsd [StatsD.stat ["stanzas", "out"] 1 "c" Nothing]
 		putStanza =<< (liftIO . ensureId) stanza
 
-	recvThread <- forkXMPP $ forever $ flip catchError (log "component read EXCEPTION") $
+	recvThread <- forkXMPP $ forever $ flip catchError (\e -> do
+		log "component read EXCEPTION" e
+		liftIO $ case e of
+			TransportError msg -> die "Component connection gone"
+			InvalidStanza el | not $ null $ isNamed (s"{http://etherx.jabber.org/streams}error") el -> die "Component connection error"
+			_ -> return ()
+		) $
 		(liftIO . hasLocked "write toStanzaProcessor" . atomicUIO . writeTChan toStanzaProcessor) =<< getStanza
 
 	flip catchError (\e -> liftIO (log "component part 2 EXCEPTION" e >> killThread sendThread >> killThread recvThread)) $ forever $ do
