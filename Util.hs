@@ -4,6 +4,7 @@ import Prelude ()
 import BasicPrelude
 import Control.Concurrent
 import Control.Concurrent.STM (STM, atomically)
+import System.Exit (ExitCode)
 import GHC.Stack (HasCallStack)
 import Data.Word (Word16)
 import Data.Bits (shiftL, (.|.))
@@ -238,12 +239,20 @@ forkXMPP kid = do
 	where
 	handler parent e
 		| Just Ex.ThreadKilled <- castException e = return ()
-		| otherwise = throwTo parent e
+		| Just (Ex.SomeAsyncException _) <- castException e = throwTo parent e
+		| Just e <- castException e = throwTo parent (e :: ExitCode)
+		| otherwise = throwTo parent (ChildThreadError e)
 
 forkFinallyXMPP :: XMPP.XMPP () -> (Either SomeException () -> IO ()) -> XMPP.XMPP ThreadId
 forkFinallyXMPP kid handler = do
 	session <- XMPP.getSession
 	liftIO $ forkFinally (void $ XMPP.runXMPP session kid) handler
+
+newtype ChildThreadError = ChildThreadError SomeException deriving (Show, Typeable)
+
+instance Ex.Exception ChildThreadError where
+	toException = Ex.asyncExceptionToException
+	fromException = Ex.asyncExceptionFromException
 
 mkElement :: XML.Name -> Text -> XML.Element
 mkElement name txt = XML.Element name [] [XML.NodeContent $ XML.ContentText txt]
