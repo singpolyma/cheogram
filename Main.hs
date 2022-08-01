@@ -1416,7 +1416,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 							Just componentFromSip <- return $ parseJID (formatJID componentFrom ++ s"/" ++ fromResource)
 							sendToComponent $ mkStanzaRec $ receivedStanza $ receivedStanzaFromTo componentFromSip routeTo stanza
 						_ ->
-							sendToComponent $ stanzaError stanza $
+							mapM_ sendToComponent $ stanzaError stanza $
 								Element (fromString "{jabber:component:accept}error")
 								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
@@ -1459,7 +1459,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 								in
 								(sendToComponent . receivedStanza) =<< mapReceivedMessageM (fmap (addNickname localpart) . UIO.lift . cacheOOB) (receivedStanzaFromTo componentFrom routeTo stanza)
 						_ | Just jid <- (`telToJid` formatJID componentJid) =<< strNode <$> jidNode to -> do
-							sendToComponent $ stanzaError stanza $
+							mapM_ sendToComponent $ stanzaError stanza $
 								Element (fromString "{jabber:component:accept}error")
 								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 								[
@@ -1470,7 +1470,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 										[NodeContent $ ContentText $ fromString "JID must include country code: " <> formatJID jid]
 								]
 						  | otherwise ->
-							sendToComponent $ stanzaError stanza $
+							mapM_ sendToComponent $ stanzaError stanza $
 								Element (fromString "{jabber:component:accept}error")
 								[(fromString "{jabber:component:accept}type", [ContentText $ fromString "cancel"])]
 								[NodeElement $ Element (fromString "{urn:ietf:params:xml:ns:xmpp-stanzas}item-not-found") [] []]
@@ -1489,27 +1489,28 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 	mapToComponent = mapToBackend (formatJID componentJid)
 	sendToComponent = hasLocked "sendToComponent" . atomically . writeTChan toComponent
 
-	stanzaError (ReceivedMessage m) errorPayload =
-		mkStanzaRec $ m {
+	stanzaError (ReceivedMessage m) errorPayload | messageType m /= MessageError =
+		Just $ mkStanzaRec $ m {
 			messageFrom = messageTo m,
 			messageTo = messageFrom m,
 			messageType = MessageError,
 			messagePayloads = messagePayloads m ++ [errorPayload]
 		}
-	stanzaError (ReceivedPresence p) errorPayload =
-		mkStanzaRec $ p {
+	stanzaError (ReceivedPresence p) errorPayload | presenceType p /= PresenceError =
+		Just $ mkStanzaRec $ p {
 			presenceFrom = presenceTo p,
 			presenceTo = presenceFrom p,
 			presenceType = PresenceError,
 			presencePayloads = presencePayloads p ++ [errorPayload]
 		}
-	stanzaError (ReceivedIQ iq) errorPayload =
-		mkStanzaRec $ iq {
+	stanzaError (ReceivedIQ iq) errorPayload | iqType iq /= IQError =
+		Just $ mkStanzaRec $ iq {
 			iqFrom = iqTo iq,
 			iqTo = iqFrom iq,
 			iqType = IQError,
 			iqPayload = Just errorPayload
 		}
+	stanzaError _ _ = Nothing
 
 	receivedStanzaFromTo from to (ReceivedMessage m) = ReceivedMessage $ m {
 			messageFrom = Just from,
