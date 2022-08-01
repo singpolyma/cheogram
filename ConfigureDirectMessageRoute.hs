@@ -1,4 +1,4 @@
-module ConfigureDirectMessageRoute (main, nodeName) where
+module ConfigureDirectMessageRoute (main, nodeName, switchBackendNodeName) where
 
 import Prelude ()
 import BasicPrelude hiding (log)
@@ -20,7 +20,9 @@ import qualified Data.Bool.HT as HT
 import qualified Data.XML.Types as XML
 
 import Util
-import qualified JidSwitch
+
+switchBackendNodeName :: Text
+switchBackendNodeName = s"https://ns.cheogram.com/sgx/jid-switch"
 
 newtype SessionID = SessionID UUID deriving (Ord, Eq, Show)
 
@@ -363,7 +365,7 @@ switchStage2 switchJid switchRoute possibleRoute existingRoute componentDomain s
 				XMPP.iqID = Just (s"ConfigureDirectMessageRoute2" ++ sessionIDToText sid),
 				XMPP.iqTo = Just switchRoute,
 				XMPP.iqFrom = Just $ sendFromForBackend componentDomain switchJid,
-				XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText JidSwitch.backendNodeName])] []
+				XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [(s"node", [ContentText switchBackendNodeName])] []
 			}
 		)
 	| otherwise =
@@ -384,7 +386,7 @@ switchStage3 switchJid switchRoute stage2ID stage2From componentDomain sid iqID 
 				XMPP.iqFrom = Just $ sendFromForBackend componentDomain switchJid,
 				XMPP.iqID = Just (s"ConfigureDirectMessageRoute3" ++ sessionIDToText sid),
 				XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command") [
-						(s"node", [ContentText JidSwitch.backendNodeName]),
+						(s"node", [ContentText switchBackendNodeName]),
 						(s"sessionid", [ContentText $ backendSid])
 					] [
 						NodeElement $ Element (fromString "{jabber:x:data}x") [

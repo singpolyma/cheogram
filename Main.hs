@@ -993,9 +993,23 @@ componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqT
 						]
 					]
 				) iq,
-				mkStanzaRec $ mkSMS componentJid pushRegisterTo $
-					s"To start registration with " ++ XMPP.formatJID from ++ s" reply with: register " ++ XMPP.formatJID from ++
-					s"\n(If you do not wish to start this registration, simply ignore this message.)"
+				mkStanzaRec $ (XMPP.emptyMessage XMPP.MessageChat) {
+					XMPP.messageTo = Just pushRegisterTo,
+					XMPP.messageFrom = Just componentJid,
+					XMPP.messagePayloads = [
+						mkElement (s"{jabber:component:accept}body") $
+							s"To start registration with " ++ XMPP.formatJID from ++ s" reply with: register " ++ XMPP.formatJID from ++
+							s"\n(If you do not wish to start this registration, simply ignore this message.)",
+						Element (s"{http://jabber.org/protocol/disco#items}query")
+							[(s"node", [ContentText $ s"http://jabber.org/protocol/commands"])] [
+								NodeElement $ Element (s"{http://jabber.org/protocol/disco#items}item") [
+									(s"jid", [ContentText $ formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName]),
+									(s"node", [ContentText ConfigureDirectMessageRoute.nodeName]),
+									(s"name", [ContentText $ s"register " ++ XMPP.formatJID from])
+								] []
+							]
+					]
+				}
 			]
 componentStanza (ComponentContext { db, componentJid }) (ReceivedIQ iq@(IQ { iqFrom = Just _, iqTo = Just (JID { jidNode = Nothing }), iqPayload = Just p }))
 	| iqType iq `elem` [IQGet, IQSet],

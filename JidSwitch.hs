@@ -12,10 +12,8 @@ import Util
 import CommandAction
 import StanzaRec
 
+import qualified ConfigureDirectMessageRoute
 import qualified DB
-
-backendNodeName :: Text
-backendNodeName = s"https://ns.cheogram.com/sgx/jid-switch"
 
 nodeName :: Text
 nodeName = s"change jabber id"
@@ -54,12 +52,26 @@ receiveIq componentJid setJidSwitch iq@(XMPP.IQ { XMPP.iqFrom = Just from, XMPP.
 	  Just newJid <- XMPP.parseJID =<< getFormField form (s"new-jid") = do
 		(from', newJid', _) <- setJidSwitch newJid
 		return [
-			mkStanzaRec $ mkSMS componentJid newJid $ concat [
-				bareTxt from',
-				s" has requested a Jabber ID change to ",
-				bareTxt newJid',
-				s". To complete this request send \"register\""
-			],
+			mkStanzaRec $ (XMPP.emptyMessage XMPP.MessageChat) {
+				XMPP.messageTo = Just newJid,
+				XMPP.messageFrom = Just componentJid,
+				XMPP.messagePayloads = [
+					mkElement (s"{jabber:component:accept}body") $ concat [
+						bareTxt from',
+						s" has requested a Jabber ID change to ",
+						bareTxt newJid',
+						s". To complete this request send \"register\""
+					],
+					Element (s"{http://jabber.org/protocol/disco#items}query")
+						[(s"node", [ContentText $ s"http://jabber.org/protocol/commands"])] [
+							NodeElement $ Element (s"{http://jabber.org/protocol/disco#items}item") [
+								(s"jid", [ContentText $ XMPP.formatJID componentJid ++ s"/CHEOGRAM%" ++ ConfigureDirectMessageRoute.nodeName]),
+								(s"node", [ContentText ConfigureDirectMessageRoute.nodeName]),
+								(s"name", [ContentText $ s"register"])
+							] []
+						]
+				]
+			},
 			mkStanzaRec $ flip iqReply iq $ Just $ commandStage sid [] (s"completed") [
 				Element (s"{http://jabber.org/protocol/commands}note") [
 					(s"{http://jabber.org/protocol/commands}type", [ContentText $ s"info"])

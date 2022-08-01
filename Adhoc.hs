@@ -53,7 +53,7 @@ botHelp _ _ = Nothing
 -- This replaces certain commands that the SGX supports with our sugared versions
 maskCommands :: XMPP.JID -> [Element] -> [Element]
 maskCommands componentJid = map (\el ->
-		if attributeText (s"node") el == Just JidSwitch.backendNodeName then
+		if attributeText (s"node") el == Just ConfigureDirectMessageRoute.switchBackendNodeName then
 			Element (s"{http://jabber.org/protocol/disco#items}item") [
 					(s"jid", [ContentText $ formatJID componentJid ++ s"/CHEOGRAM%" ++ JidSwitch.nodeName]),
 					(s"node", [ContentText JidSwitch.nodeName]),
