@@ -1301,7 +1301,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 	recvThread <- forkXMPP $ forever $ flip catchError (\e -> do
 		log "component read EXCEPTION" e
 		liftIO $ case e of
-			TransportError msg -> die "Component connection gone"
+			TransportError _ -> die "Component connection gone"
 			InvalidStanza el | not $ null $ isNamed (s"{http://etherx.jabber.org/streams}error") el -> die "Component connection error"
 			_ -> return ()
 		) $
