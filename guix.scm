@@ -3,10 +3,14 @@
   (guix packages)
   (guix download)
   (guix git-download)
+  (guix build-system gnu)
   (guix build-system haskell)
   (gnu packages pkg-config)
+  (gnu packages compression)
   (gnu packages tls)
   (gnu packages gsasl)
+  (gnu packages gnupg)
+  (gnu packages kerberos)
   (gnu packages libidn)
   (gnu packages xml)
   (gnu packages dhall)
@@ -161,6 +165,39 @@
     (description "")
     (license license:expat)))
 
+(define-public gsasl-1
+  (package
+   (name "gsasl")
+   (version "1.10.0")
+   (source (origin
+            (method url-fetch)
+            (uri (string-append "mirror://gnu/gsasl/gsasl-" version
+                                ".tar.gz"))
+            (sha256
+             (base32
+              "1lv8fp01aq4jjia9g4vkx90zacl8rgmjhfi6f1wdwnh9ws7bvg45"))))
+   (build-system gnu-build-system)
+   (arguments
+    `(#:configure-flags '("--with-gssapi-impl=mit"
+                          "--disable-static")))
+   (inputs
+    (list libgcrypt libidn libntlm mit-krb5 zlib))
+   (native-inputs
+    (list ;; Needed for cross compiling.
+          libgcrypt))
+   (propagated-inputs
+    ;; Propagate GnuTLS because libgnutls.la reads `-lnettle', and Nettle is a
+    ;; propagated input of GnuTLS.
+    (list gnutls))
+   (synopsis "Simple Authentication and Security Layer library")
+   (description
+    "GNU SASL is an implementation of the Simple Authentication and
+Security Layer framework.  On network servers such as IMAP or SMTP servers,
+SASL is used to handle client/server authentication.  This package contains
+both a library and a command-line tool to access the library.")
+   (license license:gpl3+)
+   (home-page "https://www.gnu.org/software/gsasl/")))
+
 (define-public ghc-gsasl
   (package
     (name "ghc-gsasl")
@@ -180,7 +217,7 @@
         ("1" "1c806a82qd1hkxxfh1mwk0i062bz6fkaap5ys3n4x9n6wjv7ilin")))
     (inputs
       `(("ghc-monad-loops" ,ghc-monad-loops)
-        ("gsasl" ,gsasl)))
+        ("gsasl" ,gsasl-1)))
     (native-inputs `(("pkg-config" ,pkg-config)))
     (home-page "https://git.sr.ht/~singpolyma/gsasl-haskell")
     (synopsis "Bindings for GNU libgsasl")
