@@ -271,15 +271,17 @@ stage2 componentDomain sid iqID from command
 				XMPP.iqPayload = Just $ Element (s"{jabber:iq:register}query") [] []
 			})
 
+-- Use SessionNext and SessionSaveAndNext to allow the proxied session to continue for prev
+-- Rely on expiry for cleanup
 proxyAdHocFromGateway :: Text -> XMPP.JID -> Session
 proxyAdHocFromGateway prevIqID userJid _ sid iqID from command
-	| attributeText (s"status") command == Just (s"canceled") = (SessionCancel, proxied)
+	| attributeText (s"status") command == Just (s"canceled") = (SessionNext next, proxied)
 	| attributeText (s"status") command == Just (s"completed") =
 		if (s"error") `elem` mapMaybe (attributeText (s"type")) (XML.isNamed (s"{http://jabber.org/protocol/commands}note") =<< XML.elementChildren command) then
-			(SessionCancel, proxied)
+			(SessionNext next, proxied)
 		else
 			(
-				SessionComplete userJid (Just from),
+				SessionSaveAndNext userJid from next,
 				proxied {
 					XMPP.iqPayload = fmap (\elem ->
 						elem {
@@ -292,8 +294,9 @@ proxyAdHocFromGateway prevIqID userJid _ sid iqID from command
 					) (XMPP.iqPayload proxied)
 				}
 			)
-	| otherwise = (SessionNext $ proxyAdHocFromUser iqID otherSID from, proxied)
+	| otherwise = (SessionNext next, proxied)
 	where
+	next = proxyAdHocFromUser iqID otherSID from
 	proxied =
 		(XMPP.emptyIQ XMPP.IQResult) {
 			XMPP.iqID = Just prevIqID,
