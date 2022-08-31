@@ -777,10 +777,11 @@ componentStanza _ (ReceivedMessage (m@Message { messageTo = Just to, messageFrom
 	| [x] <- isNamed (fromString "{http://jabber.org/protocol/muc#user}x") =<< messagePayloads m,
 	  not $ null $ code "104" =<< isNamed (fromString "{http://jabber.org/protocol/muc#user}status") =<< elementChildren x = do
 		queryDisco from to
-componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid }) (ReceivedMessage (m@Message { messageTo = Just to@(JID { jidNode = Just _ }), messageFrom = Just from})) = do
+componentStanza (ComponentContext { db, smsJid = (Just smsJid), componentJid, ctxCacheOOB }) (ReceivedMessage (m@Message { messageTo = Just to@(JID { jidNode = Just _ }), messageFrom = Just from})) = do
 	existingRoom <- (parseJID =<<) <$> DB.get db (DB.byNode to ["joined"])
-	componentMessage db componentJid m existingRoom from smsJid $
-		getBody "jabber:component:accept" m
+	m' <- UIO.lift $ ctxCacheOOB m
+	componentMessage db componentJid m' existingRoom from smsJid $
+		getBody "jabber:component:accept" m'
 componentStanza (ComponentContext { smsJid = (Just smsJid), toRejoinManager, componentJid }) (ReceivedPresence p@(Presence { presenceType = PresenceError, presenceFrom = Just from, presenceTo = Just to, presenceID = Just id }))
 	| fromString "CHEOGRAMREJOIN%" `T.isPrefixOf` id = do
 		log "FAILED TO REJOIN, clear join state" p
@@ -1409,15 +1410,15 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 			(Just from, Just to, Nothing, Just localpart, _)
 				| Just multipleTo <- mapM localpartToURI (T.split (==',') localpart),
 				  ReceivedMessage m <- stanza,
-				  Just backendJid <- parseJID backendHost -> liftIO $
-					let m' = m { messagePayloads = messagePayloads m ++ [
-						Element (s"{http://jabber.org/protocol/address}addresses") [] $ map (\oneto ->
-							NodeElement $ Element (s"{http://jabber.org/protocol/address}address") [
-								(s"{http://jabber.org/protocol/address}type", [ContentText $ s"to"]),
-								(s"{http://jabber.org/protocol/address}uri", [ContentText oneto])
-							] []
-						) multipleTo
-					] } in
+				  Just backendJid <- parseJID backendHost -> liftIO $ do
+					m' <- UIO.lift $ cacheOOB $ m { messagePayloads = messagePayloads m ++ [
+							Element (s"{http://jabber.org/protocol/address}addresses") [] $ map (\oneto ->
+								NodeElement $ Element (s"{http://jabber.org/protocol/address}address") [
+									(s"{http://jabber.org/protocol/address}type", [ContentText $ s"to"]),
+									(s"{http://jabber.org/protocol/address}uri", [ContentText oneto])
+								] []
+							) multipleTo
+						] }
 					-- TODO: should check if backend supports XEP-0033
 					-- TODO: fallback for no-backend case should work
 					mapM_ sendToComponent =<< componentMessage db componentJid m' Nothing from backendJid (getBody "jabber:component:accept" m')
