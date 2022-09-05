@@ -398,7 +398,7 @@ switchStage3 switchJid switchRoute stage2ID stage2From componentDomain sid iqID 
 							NodeElement $ Element (fromString "{jabber:x:data}field") [
 								(fromString "{jabber:x:data}var", [ContentText $ s"jid"])
 							] [
-								NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ bareTxt stage2From]
+								NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ bareTxt $ sendFromForBackend componentDomain stage2From]
 							]
 						]
 					]
