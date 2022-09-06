@@ -2242,6 +2242,14 @@ main = do
 					let userJid' = maybeUnescape componentJid userJid in
 					DB.del db (DB.byJid userJid' ["jidSwitch"])
 				)
+				(\userJid ->
+					let userJid' = maybeUnescape componentJid userJid in
+					DB.getEnum db (DB.byJid userJid' ["allowJidDiscovery"])
+				)
+				(\userJid allow ->
+					let userJid' = maybeUnescape componentJid userJid in
+					DB.setEnum db (DB.byJid userJid' ["allowJidDiscovery"]) allow
+				)
 
 			jingleHandler <- UIO.runEitherIO $ Jingle.setupJingleHandlers jingleStore s5bListenOn (fromString s5bhost, s5bport)
 				(log "JINGLE")

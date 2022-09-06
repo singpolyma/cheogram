@@ -31,16 +31,18 @@ type GetPossibleSwitch = XMPP.JID -> IO (Maybe (XMPP.JID, XMPP.JID, XMPP.JID))
 type GetRouteJid = XMPP.JID -> IO (Maybe XMPP.JID)
 type SetRouteJid = XMPP.JID -> Maybe XMPP.JID -> IO ()
 type ClearSwitch = XMPP.JID -> IO ()
+type GetAllowJidDiscovery = XMPP.JID -> IO (Maybe Bool)
+type SetAllowJidDiscovery = XMPP.JID -> Bool -> IO ()
 
-main :: XMPP.Domain -> GetPossibleRoute -> GetPossibleSwitch -> GetRouteJid -> SetRouteJid -> ClearSwitch -> IO (XMPP.IQ -> IO (Maybe XMPP.IQ))
-main componentDomain getPossibleRoute getPossibleSwitch getRouteJid setRouteJid clearSwitch = do
+main :: XMPP.Domain -> GetPossibleRoute -> GetPossibleSwitch -> GetRouteJid -> SetRouteJid -> ClearSwitch -> GetAllowJidDiscovery -> SetAllowJidDiscovery -> IO (XMPP.IQ -> IO (Maybe XMPP.IQ))
+main componentDomain getPossibleRoute getPossibleSwitch getRouteJid setRouteJid clearSwitch getAllowJidDiscovery setAllowJidDiscovery = do
 	stanzas <- newTQueueIO
 	void $ flip forkFinally (log "ConfigureDirectMessageRouteTOP") $ void $ iterateM_ (\sessions -> do
 			(iq, reply) <- atomically (readTQueue stanzas)
-			(sessions', response) <- processOneIQ componentDomain getPossibleRoute getPossibleSwitch getRouteJid setRouteJid clearSwitch sessions iq
+			(sessions', response) <- processOneIQ componentDomain getPossibleRoute getPossibleSwitch getRouteJid setRouteJid clearSwitch getAllowJidDiscovery setAllowJidDiscovery sessions iq
 			atomically $ reply response
 			now <- getCurrentTime
-			return $! Map.filter (\(_, time) -> now `diffUTCTime` time < 600) sessions'
+			return $! Map.filter (\(_, _, time) -> now `diffUTCTime` time < 600) sessions'
 		) Map.empty
 	return (\iq -> do
 			result <- atomically newEmptyTMVar
@@ -48,11 +50,11 @@ main componentDomain getPossibleRoute getPossibleSwitch getRouteJid setRouteJid 
 			atomically $ readTMVar result
 		)
 
-processOneIQ :: XMPP.Domain -> GetPossibleRoute -> GetPossibleSwitch -> GetRouteJid -> SetRouteJid -> ClearSwitch -> Map SessionID (Session, UTCTime) -> XMPP.IQ -> IO (Map SessionID (Session, UTCTime), Maybe XMPP.IQ)
-processOneIQ componentDomain getPossibleRoute getPossibleSwitch getRouteJid setRouteJid clearSwitch sessions iq@(XMPP.IQ { XMPP.iqID = Just iqID, XMPP.iqFrom = Just from, XMPP.iqPayload = realPayload })
+processOneIQ :: XMPP.Domain -> GetPossibleRoute -> GetPossibleSwitch -> GetRouteJid -> SetRouteJid -> ClearSwitch -> GetAllowJidDiscovery -> SetAllowJidDiscovery -> Map SessionID (Session, Maybe Bool, UTCTime) -> XMPP.IQ -> IO (Map SessionID (Session, Maybe Bool, UTCTime), Maybe XMPP.IQ)
+processOneIQ componentDomain getPossibleRoute getPossibleSwitch getRouteJid setRouteJid clearSwitch getAllowJidDiscovery setAllowJidDiscovery sessions iq@(XMPP.IQ { XMPP.iqID = Just iqID, XMPP.iqFrom = Just from, XMPP.iqPayload = realPayload })
 	| Just sid <- sessionIDFromText . snd =<< T.uncons =<< T.stripPrefix (s"ConfigureDirectMessageRoute") iqID,
           XMPP.iqType iq == XMPP.IQResult || XMPP.iqType iq == XMPP.IQError =
-		(fmap Just) <$> lookupAndStepSession setRouteJid clearSwitch sessions componentDomain sid iqID from payload
+		(fmap Just) <$> lookupAndStepSession setRouteJid clearSwitch setAllowJidDiscovery sessions componentDomain sid iqID from payload
 	| elementName payload /= s"{http://jabber.org/protocol/commands}command" ||
 	  attributeText (s"node") payload /= Just nodeName = do
 		log "ConfigureDirectMessageRoute.processOneIQ BAD INPUT" (elementName payload, attributeText (s"node") payload)
@@ -61,19 +63,20 @@ processOneIQ componentDomain getPossibleRoute getPossibleSwitch getRouteJid setR
 		else
 			return (sessions, Just $ iqError (Just iqID) (Just from) "cancel" "feature-not-implemented" Nothing)
 	| Just sid <- sessionIDFromText =<< attributeText (s"sessionid") payload =
-		(fmap Just) <$> lookupAndStepSession setRouteJid clearSwitch sessions componentDomain sid iqID from payload
+		(fmap Just) <$> lookupAndStepSession setRouteJid clearSwitch setAllowJidDiscovery sessions componentDomain sid iqID from payload
 	| otherwise = do
 		now <- getCurrentTime
 		existingRoute <- getRouteJid from
 		possibleRoute <- getPossibleRoute from
 		possibleSwitch <- getPossibleSwitch from
+		allowJidDiscovery <- getAllowJidDiscovery from
 		case possibleSwitch of
 			Just (newJid, switchJid, switchRoute) -> do
 				(sid, session) <- newSession $ switchStage2 switchJid switchRoute possibleRoute existingRoute
-				return (Map.insert sid (session, now) sessions, Just $ switchStage1 newJid switchJid switchRoute possibleRoute existingRoute from iqID sid)
+				return (Map.insert sid (session, allowJidDiscovery, now) sessions, Just $ switchStage1 newJid switchJid switchRoute possibleRoute existingRoute from iqID sid)
 			_ -> do
 				(sid, session) <- newSession stage2
-				return (Map.insert sid (session, now) sessions, Just $ stage1 possibleRoute existingRoute from iqID sid)
+				return (Map.insert sid (session, allowJidDiscovery, now) sessions, Just $ stage1 possibleRoute existingRoute from iqID sid)
 	where
 	payload
 		| Just p <- realPayload,
@@ -81,13 +84,13 @@ processOneIQ componentDomain getPossibleRoute getPossibleSwitch getRouteJid setR
 		| XMPP.iqType iq == XMPP.IQError =
 			let Just p = XMPP.iqPayload $ iqError Nothing Nothing "cancel" "internal-server-error" Nothing in p
 		| otherwise = fromMaybe (Element (s"no-payload") [] []) realPayload
-processOneIQ _ _ _ _ _ _ sessions iq@(XMPP.IQ { XMPP.iqID = iqID, XMPP.iqFrom = from }) = do
+processOneIQ _ _ _ _ _ _ _ _ sessions iq@(XMPP.IQ { XMPP.iqID = iqID, XMPP.iqFrom = from }) = do
 	log "ConfigureDirectMessageRoute.processOneIQ BAD INPUT" iq
 	return (sessions, Just $ iqError iqID from "cancel" "feature-not-implemented" Nothing)
 
-lookupAndStepSession :: SetRouteJid -> ClearSwitch -> Map SessionID (Session, UTCTime) -> Session' (IO (Map SessionID (Session, UTCTime), XMPP.IQ))
-lookupAndStepSession setRouteJid clearSwitch sessions componentDomain sid iqID from payload
-	| Just (stepSession, _) <- Map.lookup sid sessions =
+lookupAndStepSession :: SetRouteJid -> ClearSwitch -> SetAllowJidDiscovery -> Map SessionID (Session, Maybe Bool, UTCTime) -> Session' (IO (Map SessionID (Session, Maybe Bool, UTCTime), XMPP.IQ))
+lookupAndStepSession setRouteJid clearSwitch setAllowJidDiscovery sessions componentDomain sid iqID from payload
+	| Just (stepSession, allowJidDiscovery, _) <- Map.lookup sid sessions =
 		case attributeText (s"action") payload of
 			Just action | action == s"cancel" ->
 				return (Map.delete sid sessions, (XMPP.emptyIQ XMPP.IQResult) {
@@ -124,20 +127,24 @@ lookupAndStepSession setRouteJid clearSwitch sessions componentDomain sid iqID f
 						]
 				})
 			_ ->
-				let (session', iq) = stepSession componentDomain sid iqID from payload in
+				let (session', iq) = stepSession allowJidDiscovery componentDomain sid iqID from payload in
 				fmap (flip (,) iq) $ case session' of
 					SessionNext s -> do
 						now <- getCurrentTime
-						return $! Map.insert sid (s, now) sessions
+						return $! Map.insert sid (s, allowJidDiscovery, now) sessions
 					SessionCancel -> return $! Map.delete sid sessions
 					SessionSaveAndNext userJid gatewayJid s -> do
 						now <- getCurrentTime
 						userJid `setRouteJid` (Just gatewayJid)
-						return $! Map.insert sid (s, now) sessions
+						return $! Map.insert sid (s, allowJidDiscovery, now) sessions
+					SessionAllowJidDiscovery userJid allow maybeNext -> do
+						now <- getCurrentTime
+						userJid `setAllowJidDiscovery` allow
+						return $! Map.alter (const $ fmap (\s -> (s, allowJidDiscovery, now)) maybeNext) sid sessions
 					SessionClearSwitchAndNext userJid s -> do
 						now <- getCurrentTime
 						clearSwitch userJid
-						return $! Map.insert sid (s, now) sessions
+						return $! Map.insert sid (s, allowJidDiscovery, now) sessions
 					SessionCompleteSwitch userJid oldJid gatewayJid -> do
 						userJid `setRouteJid` Just gatewayJid
 						oldJid `setRouteJid` Nothing
@@ -150,14 +157,45 @@ lookupAndStepSession setRouteJid clearSwitch sessions componentDomain sid iqID f
 		log "ConfigureDirectMessageRoute.processOneIQ NO SESSION FOUND" (sid, iqID, from, payload)
 		return (sessions, iqError (Just iqID) (Just from) "modify" "bad-request" (Just "bad-sessionid"))
 
-data SessionResult = SessionNext Session | SessionCancel | SessionSaveAndNext XMPP.JID XMPP.JID Session | SessionClearSwitchAndNext XMPP.JID Session | SessionCompleteSwitch XMPP.JID XMPP.JID XMPP.JID | SessionComplete XMPP.JID (Maybe XMPP.JID)
+data SessionResult = SessionNext Session | SessionCancel | SessionSaveAndNext XMPP.JID XMPP.JID Session | SessionClearSwitchAndNext XMPP.JID Session | SessionCompleteSwitch XMPP.JID XMPP.JID XMPP.JID | SessionComplete XMPP.JID (Maybe XMPP.JID) | SessionAllowJidDiscovery XMPP.JID Bool (Maybe Session)
 type Session' a = XMPP.Domain -> SessionID -> Text -> XMPP.JID -> Element -> a
-type Session = Session' (SessionResult, XMPP.IQ)
+type Session = Maybe Bool -> Session' (SessionResult, XMPP.IQ)
 
 data RegisterFormType = DataForm | LegacyRegistration
 
+jidDiscoveryOptInParse :: (Text -> XMPP.IQ) -> Maybe Session -> Session
+jidDiscoveryOptInParse nextIQ nextS _ _ sid iqID from command
+	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
+	  Just allow <- parseBool =<< getFormField form (s"allow_jid_discovery") = (SessionAllowJidDiscovery from allow nextS, nextIQ iqID)
+	| otherwise = (SessionCancel, iqError (Just iqID) (Just from) "modify" "bad-request" (Just "bad-payload"))
+
+jidDiscoveryOptIn :: (Text -> XMPP.IQ) -> Maybe Session -> XMPP.JID -> SessionID -> Text -> Maybe Bool -> (Session, XMPP.IQ)
+jidDiscoveryOptIn nextIQ nextS iqTo sid iqID allowJidDiscovery = (jidDiscoveryOptInParse nextIQ nextS, (XMPP.emptyIQ XMPP.IQResult) {
+	XMPP.iqTo = Just iqTo,
+	XMPP.iqID = Just iqID,
+	XMPP.iqPayload = Just $ commandStage sid False $
+		Element (fromString "{jabber:x:data}x") [
+			(fromString "{jabber:x:data}type", [ContentText $ s"form"])
+		] [
+			NodeElement $ Element (fromString "{jabber:x:data}title") [] [NodeContent $ ContentText $ s"Jabber ID Discoverability Opt-in"],
+			NodeElement $ Element (fromString "{jabber:x:data}instructions") [] [
+				NodeContent $ ContentText $ concat [
+					s"You may want to allow other users to discover your Jabber ID when all they know is your phone number. ",
+					s"This can allow upgrading your contacts to end-to-end encryption, video calling, and other benefits of Jabber over time."
+				]
+			],
+			NodeElement $ Element (fromString "{jabber:x:data}field") [
+				(fromString "{jabber:x:data}type", [ContentText $ s"boolean"]),
+				(fromString "{jabber:x:data}var", [ContentText $ s"allow_jid_discovery"]),
+				(fromString "{jabber:x:data}label", [ContentText $ s"Allow others to discover your Jabber ID based on your phone number"])
+			] [
+				NodeElement $ Element (fromString "{jabber:x:data}value") [] [NodeContent $ ContentText $ if allowJidDiscovery == Just False then s"false" else s"true"]
+			]
+		]
+})
+
 stage5 :: Text -> XMPP.JID -> Session
-stage5 stage4iqID stage4from _ sid iqID from error
+stage5 stage4iqID stage4from allowJidDiscovery _ sid iqID from error
 	| elementName error == s"{jabber:component:accept}error" =
 		(SessionCancel, (XMPP.emptyIQ XMPP.IQError) {
 			XMPP.iqID = Just stage4iqID,
@@ -165,8 +203,8 @@ stage5 stage4iqID stage4from _ sid iqID from error
 			XMPP.iqPayload = Just error
 		})
 	| otherwise =
-		(SessionComplete stage4from (Just from), (XMPP.emptyIQ XMPP.IQResult) {
-			XMPP.iqID = Just stage4iqID,
+		let (next, iq) = jidDiscoveryOptIn (\iqID' -> (XMPP.emptyIQ XMPP.IQResult) {
+			XMPP.iqID = Just iqID',
 			XMPP.iqTo = Just stage4from,
 			XMPP.iqPayload = Just $ Element (s"{http://jabber.org/protocol/commands}command")
 				[
@@ -181,10 +219,12 @@ stage5 stage4iqID stage4from _ sid iqID from error
 						NodeContent $ ContentText $ s"Registration complete."
 					]
 				]
-		})
+		}) Nothing stage4from sid stage4iqID allowJidDiscovery
+		in
+		(SessionSaveAndNext stage4from from next, iq)
 
 stage4 :: RegisterFormType -> XMPP.JID -> Session
-stage4 formType gatewayJid componentDomain sid iqID from command
+stage4 formType gatewayJid _ componentDomain sid iqID from command
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command =
 		(SessionNext $ stage5 iqID from, (XMPP.emptyIQ XMPP.IQSet) {
 			XMPP.iqID = Just (s"ConfigureDirectMessageRoute4" ++ sessionIDToText sid),
@@ -200,7 +240,7 @@ stage4 formType gatewayJid componentDomain sid iqID from command
 	sendFrom = sendFromForBackend componentDomain from
 
 stage3 :: Text -> XMPP.JID -> Session
-stage3 stage2iqID stage2from _ sid iqID from query
+stage3 stage2iqID stage2from _ _ sid iqID from query
 	| elementName query == s"{jabber:component:accept}error" =
 		(SessionCancel, (XMPP.emptyIQ XMPP.IQError) {
 			XMPP.iqID = Just stage2iqID,
@@ -223,7 +263,7 @@ stage3 stage2iqID stage2from _ sid iqID from query
 		})
 
 stage2 :: Session
-stage2 componentDomain sid iqID from command
+stage2 _ componentDomain sid iqID from command
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
 	  Just gatewayJid <- XMPP.parseJID =<< getFormField form (s"gateway-jid"),
 	  XMPP.jidNode gatewayJid == Nothing && XMPP.jidResource gatewayJid == Nothing =
@@ -255,7 +295,7 @@ stage2 componentDomain sid iqID from command
 	| otherwise = (SessionCancel, iqError (Just iqID) (Just from) "modify" "bad-request" (Just "bad-payload"))
 	where
 	sendFrom = sendFromForBackend componentDomain from
-	commandOrIBR gatewayJid _ _ _ _ command'
+	commandOrIBR gatewayJid _ _ _ _ _ command'
 		| (s"jabber:iq:register") `elem` mapMaybe (attributeText (s"node")) (isNamed (s"{http://jabber.org/protocol/disco#items}item") =<< elementChildren command') =
 			(SessionNext $ proxyAdHocFromGateway iqID from, (XMPP.emptyIQ XMPP.IQSet) {
 				XMPP.iqID = Just (s"ConfigureDirectMessageRoute2" ++ sessionIDToText sid),
@@ -274,32 +314,33 @@ stage2 componentDomain sid iqID from command
 -- Use SessionNext and SessionSaveAndNext to allow the proxied session to continue for prev
 -- Rely on expiry for cleanup
 proxyAdHocFromGateway :: Text -> XMPP.JID -> Session
-proxyAdHocFromGateway prevIqID userJid _ sid iqID from command
-	| attributeText (s"status") command == Just (s"canceled") = (SessionNext next, proxied)
+proxyAdHocFromGateway prevIqID userJid allowJidDiscovery _ sid iqID from command
+	| attributeText (s"status") command == Just (s"canceled") = (SessionNext next, proxied prevIqID)
 	| attributeText (s"status") command == Just (s"completed") =
 		if (s"error") `elem` mapMaybe (attributeText (s"type")) (XML.isNamed (s"{http://jabber.org/protocol/commands}note") =<< XML.elementChildren command) then
-			(SessionNext next, proxied)
+			(SessionNext next, proxied prevIqID)
 		else
-			(
-				SessionSaveAndNext userJid from next,
-				proxied {
-					XMPP.iqPayload = fmap (\elem ->
-						elem {
-							XML.elementNodes = XML.elementNodes elem ++ [
-								XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/commands}note")
-									[(s"type", [XML.ContentText $ s"info"])]
-									[XML.NodeContent $ XML.ContentText $ s"Registration complete."]
-							]
-						}
-					) (XMPP.iqPayload proxied)
-				}
-			)
-	| otherwise = (SessionNext next, proxied)
+			let (next', iq) = jidDiscoveryOptIn (\iqid ->
+					(proxied iqid) {
+						XMPP.iqPayload = fmap (\elem ->
+							elem {
+								XML.elementNodes = XML.elementNodes elem ++ [
+									XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/commands}note")
+										[(s"type", [XML.ContentText $ s"info"])]
+										[XML.NodeContent $ XML.ContentText $ s"Registration complete."]
+								]
+							}
+						) (XMPP.iqPayload $ proxied iqid)
+					}
+				) (Just next) userJid sid prevIqID allowJidDiscovery
+			in
+			(SessionSaveAndNext userJid from next', iq)
+	| otherwise = (SessionNext next, proxied prevIqID)
 	where
 	next = proxyAdHocFromUser iqID otherSID from
-	proxied =
+	proxied iqid =
 		(XMPP.emptyIQ XMPP.IQResult) {
-			XMPP.iqID = Just prevIqID,
+			XMPP.iqID = Just iqid,
 			XMPP.iqTo = Just userJid,
 			XMPP.iqPayload = Just $ command {
 				XML.elementAttributes = map (\attr@(name, _) ->
@@ -313,7 +354,7 @@ proxyAdHocFromGateway prevIqID userJid _ sid iqID from command
 	otherSID = fromMaybe mempty $ XML.attributeText (s"sessionid") command
 
 proxyAdHocFromUser :: Text -> Text -> XMPP.JID -> Session
-proxyAdHocFromUser prevIqID otherSID gatewayJid componentDomain _ iqID from command = (
+proxyAdHocFromUser prevIqID otherSID gatewayJid _ componentDomain _ iqID from command = (
 		SessionNext $ proxyAdHocFromGateway iqID from,
 		(XMPP.emptyIQ XMPP.IQSet) {
 			XMPP.iqID = Just prevIqID,
@@ -359,7 +400,7 @@ switchStage1 newJid switchJid switchRoute possibleRoute existingRoute iqTo iqID 
 }
 
 switchStage2 :: XMPP.JID -> XMPP.JID -> Maybe XMPP.JID -> Maybe XMPP.JID -> Session
-switchStage2 switchJid switchRoute possibleRoute existingRoute componentDomain sid iqID from command
+switchStage2 switchJid switchRoute possibleRoute existingRoute _ componentDomain sid iqID from command
 	| [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
 	  Just True <- parseBool =<< getFormField form (s"confirm") =
 		(
@@ -378,7 +419,7 @@ switchStage2 switchJid switchRoute possibleRoute existingRoute componentDomain s
 		)
 
 switchStage3 :: XMPP.JID -> XMPP.JID -> Text -> XMPP.JID -> Session
-switchStage3 switchJid switchRoute stage2ID stage2From componentDomain sid iqID from command
+switchStage3 switchJid switchRoute stage2ID stage2From _ componentDomain sid iqID from command
 	| Just backendSid <- attributeText (s"sessionid") command,
 	  [form] <- isNamed (fromString "{jabber:x:data}x") =<< elementChildren command,
 	  isJust $ getFormField form $ s"jid" =
@@ -407,7 +448,7 @@ switchStage3 switchJid switchRoute stage2ID stage2From componentDomain sid iqID 
 	| otherwise = (SessionCancel, iqError (Just stage2ID) (Just stage2From) "cancel" "internal-server-error" Nothing)
 
 switchStage4 :: XMPP.JID -> XMPP.JID -> Text -> XMPP.JID -> Session
-switchStage4 switchJid switchRoute stage2ID stage2From componentDomain sid iqID from command
+switchStage4 switchJid switchRoute stage2ID stage2From _ componentDomain sid iqID from command
 	| attributeText (s"status") command == Just (s"canceled") = (SessionCancel, proxied)
 	| attributeText (s"status") command == Just (s"completed") =
 		if (s"error") `elem` mapMaybe (attributeText (s"type")) (XML.isNamed (s"{http://jabber.org/protocol/commands}note") =<< XML.elementChildren command) then
