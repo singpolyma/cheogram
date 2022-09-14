@@ -2076,8 +2076,8 @@ joinPartDebouncer db backendHost sendToComponent componentJid toRoomPresences to
 			(_, state') -> return state'
 
 
-adhocBotManager :: (UIO.Unexceptional m) => DB.DB -> JID -> (XMPP.Message -> UIO.UIO ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> (STM XMPP.Message) -> m ()
-adhocBotManager db componentJid sendMessage sendIQ messages = do
+adhocBotManager :: (UIO.Unexceptional m) => DB.DB -> ([StatsD.Stat] -> UIO ()) -> JID -> (XMPP.Message -> UIO.UIO ()) -> (XMPP.IQ -> UIO.UIO (STM (Maybe XMPP.IQ))) -> (STM XMPP.Message) -> m ()
+adhocBotManager db pushStatsd componentJid sendMessage sendIQ messages = do
 	cleanupChan <- atomicUIO newTChan
 	statefulManager cleanupChan Map.empty
 	where
@@ -2088,6 +2088,8 @@ adhocBotManager db componentJid sendMessage sendIQ messages = do
 
 	processMessage cleanupChan sessions message = do
 		-- XXX: At some point this should not include resource, but it makes it easy to test for now
+		UIO.lift $ pushStatsd [StatsD.stat ["adhoc-bot", "msg-recv"] 1 "c" Nothing]
+
 		let key = bareTxt <$> (XMPP.stanzaFrom message)
 		sessions' <- case Map.lookup key sessions of
 			Just input -> input message >> return sessions
@@ -2159,10 +2161,11 @@ main = do
 			toRejoinManager <- atomically newTChan
 
 			statsd <- openStatsD statsdHost (show statsdPort) ["cheogram"]
+			let pushStatsd = void . UIO.fromIO . StatsD.push statsd
 
 			(sendIQ, iqReceiver) <- iqManager $ atomicUIO . writeTChan sendToComponent . mkStanzaRec
 			adhocBotMessages <- atomically newTChan
-			void $ forkFinally (adhocBotManager db componentJid (atomicUIO . writeTChan sendToComponent . mkStanzaRec) sendIQ (readTChan adhocBotMessages)) (log "adhocBotManagerTOP")
+			void $ forkFinally (adhocBotManager db pushStatsd componentJid (atomicUIO . writeTChan sendToComponent . mkStanzaRec) sendIQ (readTChan adhocBotMessages)) (log "adhocBotManagerTOP")
 
 			void $ forkFinally (void $ joinPartDebouncer db backendHost (atomically . writeTChan sendToComponent) componentJid toRoomPresences toJoinPartDebouncer) (log "joinPartDebouncerTOP")
 			void $ forkFinally (void $ roomPresences db toRoomPresences) (log "roomPresencesTOP")
@@ -2269,7 +2272,7 @@ main = do
 						Nothing -> iqNotImplemented iq
 				)
 
-			let pushStatsd = void . UIO.fromIO . StatsD.push statsd
+
 			maybeAvatar <- mapM mkAvatar maybeAvatarPath
 
 			log "" "runComponent STARTING"
