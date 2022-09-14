@@ -2095,7 +2095,9 @@ adhocBotManager db pushStatsd componentJid sendMessage sendIQ messages = do
 			Just input -> input message >> return sessions
 			Nothing -> do
 				newChan <- atomicUIO newTChan
+
 				UIO.forkFinally (adhocBotSession db componentJid sendMessage sendIQ (readTChan newChan) message) (\result -> do
+						pushStatsd [StatsD.stat ["adhoc-bot", "cmd-run"] 1 "c" Nothing]
 						fromIO_ $ either (log "adhocBotManager") (const $ return ()) result
 						atomicUIO $ writeTChan cleanupChan key
 					)
