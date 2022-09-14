@@ -1287,6 +1287,7 @@ cacheOneOOB magic pushStatsd jingleStore jingleStoreURL oob
 						}
 					)
 	| otherwise = do
+		pushStatsd [StatsD.stat ["cache", "oob", "malformed"] 1 "c" Nothing]
 		log "cacheOneOOB MALFORMED" oob
 		return (Nothing, oob)
 	where
