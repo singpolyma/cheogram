@@ -2274,6 +2274,8 @@ main = do
 
 			log "" "runComponent STARTING"
 
+			UIO.lift $ pushStatsd [StatsD.stat ["service", "start"] 1 "c" Nothing]
+
 			log "runComponent ENDED" =<< runComponent (Server componentJid host port) secret
 				(component db presenceRedis (UIO.lift . pushStatsd) backendHost did maybeAvatar (cacheOOB magic (UIO.lift . pushStatsd) jingleStore jingleStoreURL) sendIQ iqReceiver (writeTChan adhocBotMessages) toRoomPresences toRejoinManager toJoinPartDebouncer sendToComponent toStanzaProcessor processDirectMessageRouteConfig jingleHandler componentJid [registrationJid] conferences)
 		_ -> log "ERROR" "Bad arguments"
