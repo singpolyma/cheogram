@@ -220,6 +220,9 @@ discoToCapsHash query =
 getBody :: String -> XMPP.Message -> Maybe Text
 getBody ns = listToMaybe . fmap (mconcat . XML.elementText) . (XML.isNamed (XML.Name (fromString "body") (Just $ fromString ns) Nothing) <=< XMPP.messagePayloads)
 
+getThread :: String -> XMPP.Message -> Maybe Text
+getThread ns = listToMaybe . fmap (mconcat . XML.elementText) . (XML.isNamed (XML.Name (fromString "thread") (Just $ fromString ns) Nothing) <=< XMPP.messagePayloads)
+
 mkSMS :: XMPP.JID -> XMPP.JID -> Text -> XMPP.Message
 mkSMS from to txt = (XMPP.emptyMessage XMPP.MessageChat) {
 	XMPP.messageTo = Just to,

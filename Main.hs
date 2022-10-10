@@ -466,7 +466,9 @@ componentMessage db componentJid m@(Message { messageTo = Just to }) existingRoo
 			Nothing -> do
 				nick <- nickFor db componentJid from existingRoom
 				let txt = mconcat [s"<", nick, s" says> ", strippedBody]
-				return [mkStanzaRec $ mkSMS componentJid smsJid txt]
+				let sms = mkSMS componentJid smsJid txt
+				let thread = (maybe id (\t f -> f ++ s" " ++ t) (getThread "jabber:component:accept" m)) (bareTxt from)
+				return [mkStanzaRec $ sms { messagePayloads = (Element (s"{jabber:component:accept}thread") [] [NodeContent $ ContentText thread]) : messagePayloads sms } ]
 	where
 	strippedM = mapBody (const strippedBody) m
 	strippedBody = stripOtrWhitespace body
