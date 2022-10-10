@@ -1418,7 +1418,7 @@ component db redis pushStatsd backendHost did maybeAvatar cacheOOB sendIQ iqRece
 				  Just txt <- getBody "jabber:component:accept" m,
 				  Just cheoJid <- mapToComponent from,
 				  fmap strNode (jidNode from) /= Just did ->
-					liftIO (mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt)
+					liftIO (mapM_ sendToComponent =<< processSMS db componentJid conferenceServers from cheoJid txt (getThread "jabber:component:accept" m))
 			(Just from, Just to, Nothing, Just localpart, ReceivedMessage m)
 				| Just txt <- getBody "jabber:component:accept" m,
 				  Just owner <- parseJID (unescapeJid localpart),
@@ -1661,7 +1661,7 @@ stripCIPrefix prefix str
 data Command = Help | Create Text | Join JID | JoinInvited | JoinInvitedWrong | Debounce Int | Send Text | Who | List | Leave | InviteCmd JID | SetNick Text | Whisper JID Text | AddJid JID | DelJid JID | Jids
 	deriving (Show, Eq)
 
-parseCommand txt room nick componentJid
+parseCommand txt thread room nick componentJid
 	| Just jid <- stripCIPrefix (fromString "/invite ") txt =
 		InviteCmd <$> (
 			(maybeStripProxy <$> parseJIDrequireNode jid) <|>
@@ -1692,6 +1692,8 @@ parseCommand txt room nick componentJid
 	| citxt == fromString "/who" = Just Who
 	| citxt == fromString "/list" = Just List
 	| citxt == fromString "/help" = Just Help
+   | Just to <- parseJID =<< fmap (head . T.split (==' ')) thread =
+		Just $ Whisper (maybeStripProxy to) txt
 	| otherwise = Just $ Send txt
 	where
 	maybeStripProxy jid
@@ -1818,10 +1820,10 @@ registerToGateway componentJid gatewayJid did password = return [
 		}
 	]
 
-processSMS db componentJid conferenceServers smsJid cheoJid txt = do
+processSMS db componentJid conferenceServers smsJid cheoJid txt thread = do
 	nick <- fromMaybe (maybe (formatJID cheoJid) strNode (jidNode cheoJid)) <$> DB.get db (DB.byNode cheoJid ["nick"])
 	existingRoom <- (fmap (\jid -> jid { jidResource = Nothing }) . parseJID =<<) <$> DB.get db (DB.byNode cheoJid ["joined"])
-	case parseCommand txt existingRoom nick componentJid of
+	case parseCommand txt thread existingRoom nick componentJid of
 		Just JoinInvited -> do
 			invitedRoom <- (parseJID =<<) <$> DB.get db (DB.byNode cheoJid ["invited"])
 			let toJoin = invitedRoom >>= \jid -> parseJID (bareTxt jid <> s"/" <> nick)
