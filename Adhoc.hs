@@ -271,7 +271,7 @@ adhocBotAnswerListSingle sendText getMessage field = do
 		_ -> log "ADHOC BOT FIELD WITHOUT VAR" field >> return []
 	where
 	helperText = s"I didn't understand your answer. Please just send the number of the one item you want to pick, like \"1\""
-	parser = Atto.skipMany Atto.space *> Atto.decimal <* Atto.skipMany Atto.space
+	parser = Atto.skipMany Atto.space *> Atto.decimal <* Atto.skipMany Atto.space <* Atto.endOfInput
 	openParser = (Right <$> parser) <|> (Left <$> Atto.takeText)
 
 adhocBotAnswerForm :: (UIO.Unexceptional m) => (Text -> m ()) -> m XMPP.Message -> Element -> m Element
