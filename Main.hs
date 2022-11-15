@@ -866,9 +866,9 @@ componentStanza (ComponentContext { maybeAvatar = Just (Avatar hash _ b64) }) (R
 		elementChildren =<<
 		isNamed (s"{http://jabber.org/protocol/pubsub}pubsub") p,
 	  attributeText (s"node") items == Just (s"urn:xmpp:avatar:data"),
-	  [item] <- isNamed (s"{http://jabber.org/protocol/pubsub}item") =<<
+	  item <- headZ $ isNamed (s"{http://jabber.org/protocol/pubsub}item") =<<
 		elementChildren items,
-	  attributeText (s"id") item == Just hash =
+	  isNothing item || (attributeText (s"id") =<< item) == Just hash =
 		return [mkStanzaRec $ iqReply (Just $
 			XML.Element (s"{http://jabber.org/protocol/pubsub}pubsub") [] [
 				XML.NodeElement $ XML.Element (s"{http://jabber.org/protocol/pubsub}items")
