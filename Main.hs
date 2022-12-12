@@ -758,6 +758,7 @@ componentStanza (ComponentContext { adhocBotMessage, ctxCacheOOB, componentJid }
 		-- TODO: only if target does not understand stanza addressing
 		reply' <- UIO.lift $ ctxCacheOOB reply
 		return [mkStanzaRec reply']
+	| MessageError == messageType m = return []
 	| Just _ <- getBody "jabber:component:accept" m = do
 		hasLocked "adhocBotMessage" $ atomicUIO $ adhocBotMessage m
 		return []
